@@ -709,9 +709,49 @@ drawIcon(). New per-animation init flags reset in
 resetAnimState(): tetInit, snakeInit, logoInit, stunInit,
 rripInit, boidInit, fwInit, rdInit.
 
-Reach the new modes from the NeoTrellis with button 2
+Reach the modes from the NeoTrellis with button 2
 (next) / button 6 (prev), same as before.
 
 =============================================================
-END OF DOCUMENT (v2.1)
+APPENDIX B — SETUP MODE, TEXT SYSTEM & OVERLAY (2026-07)
+=============================================================
+
+TOTAL_ANIMS is now 55 (cases 0..54), synced in BOTH sketches
+(constrain bounds now 0..54). A calibration mode was inserted
+at index 0, so every previous animation shifted up by one.
+
+  0  SETUP  — lights every strip's crossing LEDs so each LED
+     strip can be aligned into a clean grid. X-strip crossings
+     are RED, Y-strip crossings GREEN, the (X1,Y1) origin WHITE.
+     It is index 0, so it is also the power-on default. Raise
+     brightness (button 0) if the room is bright.
+
+  1..51  the original 39 + the 12-pack, all shifted +1
+         (e.g. heartbeat is now 1, tetris is now 40).
+
+  52 TOGA   \
+  53 CASTLE  >  scrolling-text banner modes
+  54 2026   /
+
+TEXT / FONT SYSTEM (grid_SW.ino):
+  - FONT5x7[37][7]: 5x7 glyphs for space, A..Z, 0..9.
+  - drawTextCells(str,xStart,topRow,colour): renders text on
+    the 11x11 cell canvas (each glyph pixel = one grid cell).
+  - anim_scrollBanner(): shared right-to-left scroller used by
+    the three banner modes.
+
+MODE-CHANGE OVERLAY:
+  On every next/prev mode change the grid briefly scrolls the
+  mode's NUMBER + NAME (e.g. "40 TETRIS") before the animation
+  starts. Names live in ANIM_NAMES[55] (index = case number).
+  Implemented via triggerOverlay()/renderOverlay(); the loop
+  shows the overlay while millis() < overlayUntil, then resumes
+  the selected animation. Number shown is 1-based (matches the
+  existing "Anim%d" serial output).
+
+  NOTE: if animations are ever reordered, keep ANIM_NAMES[] and
+  the dispatch switch in the same order.
+
+=============================================================
+END OF DOCUMENT (v2.2)
 =============================================================

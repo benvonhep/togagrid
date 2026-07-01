@@ -2566,7 +2566,7 @@ void loadSettings() {
   cfg.strobeSquares    = prefs.getUChar("ssq",  30);
   cfg.animSpeed        = prefs.getFloat("spd",  1.0f);
   prefs.end();
-  cfg.animIndex        = constrain(cfg.animIndex, 0, 50);
+  cfg.animIndex        = constrain(cfg.animIndex, 0, 54);
   cfg.brightness       = constrain(cfg.brightness, 1, 255);
   cfg.strobeBrightness = constrain(cfg.strobeBrightness, 1, 255);
   cfg.strobeOnMs       = constrain(cfg.strobeOnMs, 5, 200);
@@ -2998,7 +2998,130 @@ void anim_reactionDiff(uint32_t at,float dt){
   FastLED.show();
 }
 
-#define TOTAL_ANIMS 51
+// ═══════════════════════════════════════════════════════
+//  TEXT / FONT SYSTEM  (5x7 glyphs on the 11x11 cell canvas)
+//  Used by the banner modes and the mode-change overlay.
+// ═══════════════════════════════════════════════════════
+// FONT5x7[glyph][row], 5 bits/row (bit4 = leftmost column).
+// glyph index: 0=space, 1..26 = A..Z, 27..36 = 0..9
+const uint8_t FONT5x7[37][7]={
+  {0,0,0,0,0,0,0},                                            // ' '
+  {0b00100,0b01010,0b10001,0b10001,0b11111,0b10001,0b10001},  // A
+  {0b11110,0b10001,0b10001,0b11110,0b10001,0b10001,0b11110},  // B
+  {0b01110,0b10001,0b10000,0b10000,0b10000,0b10001,0b01110},  // C
+  {0b11110,0b10001,0b10001,0b10001,0b10001,0b10001,0b11110},  // D
+  {0b11111,0b10000,0b10000,0b11110,0b10000,0b10000,0b11111},  // E
+  {0b11111,0b10000,0b10000,0b11110,0b10000,0b10000,0b10000},  // F
+  {0b01110,0b10001,0b10000,0b10111,0b10001,0b10001,0b01111},  // G
+  {0b10001,0b10001,0b10001,0b11111,0b10001,0b10001,0b10001},  // H
+  {0b11111,0b00100,0b00100,0b00100,0b00100,0b00100,0b11111},  // I
+  {0b00111,0b00010,0b00010,0b00010,0b00010,0b10010,0b01100},  // J
+  {0b10001,0b10010,0b10100,0b11000,0b10100,0b10010,0b10001},  // K
+  {0b10000,0b10000,0b10000,0b10000,0b10000,0b10000,0b11111},  // L
+  {0b10001,0b11011,0b10101,0b10101,0b10001,0b10001,0b10001},  // M
+  {0b10001,0b10001,0b11001,0b10101,0b10011,0b10001,0b10001},  // N
+  {0b01110,0b10001,0b10001,0b10001,0b10001,0b10001,0b01110},  // O
+  {0b11110,0b10001,0b10001,0b11110,0b10000,0b10000,0b10000},  // P
+  {0b01110,0b10001,0b10001,0b10001,0b10101,0b10010,0b01101},  // Q
+  {0b11110,0b10001,0b10001,0b11110,0b10100,0b10010,0b10001},  // R
+  {0b01111,0b10000,0b10000,0b01110,0b00001,0b00001,0b11110},  // S
+  {0b11111,0b00100,0b00100,0b00100,0b00100,0b00100,0b00100},  // T
+  {0b10001,0b10001,0b10001,0b10001,0b10001,0b10001,0b01110},  // U
+  {0b10001,0b10001,0b10001,0b10001,0b10001,0b01010,0b00100},  // V
+  {0b10001,0b10001,0b10001,0b10101,0b10101,0b11011,0b10001},  // W
+  {0b10001,0b10001,0b01010,0b00100,0b01010,0b10001,0b10001},  // X
+  {0b10001,0b10001,0b01010,0b00100,0b00100,0b00100,0b00100},  // Y
+  {0b11111,0b00001,0b00010,0b00100,0b01000,0b10000,0b11111},  // Z
+  {0b01110,0b10001,0b10011,0b10101,0b11001,0b10001,0b01110},  // 0
+  {0b00100,0b01100,0b00100,0b00100,0b00100,0b00100,0b01110},  // 1
+  {0b01110,0b10001,0b00001,0b00010,0b00100,0b01000,0b11111},  // 2
+  {0b11111,0b00010,0b00100,0b00010,0b00001,0b10001,0b01110},  // 3
+  {0b00010,0b00110,0b01010,0b10010,0b11111,0b00010,0b00010},  // 4
+  {0b11111,0b10000,0b11110,0b00001,0b00001,0b10001,0b01110},  // 5
+  {0b00110,0b01000,0b10000,0b11110,0b10001,0b10001,0b01110},  // 6
+  {0b11111,0b00001,0b00010,0b00100,0b01000,0b01000,0b01000},  // 7
+  {0b01110,0b10001,0b10001,0b01110,0b10001,0b10001,0b01110},  // 8
+  {0b01110,0b10001,0b10001,0b01111,0b00001,0b00010,0b01100}   // 9
+};
+int glyphIndex(char c){
+  if(c>='a'&&c<='z') c-=32;
+  if(c>='A'&&c<='Z') return c-'A'+1;
+  if(c>='0'&&c<='9') return c-'0'+27;
+  return 0; // space / unknown
+}
+int textPixelWidth(const char* s){ int n=0; while(*s++) n++; return n*6-1; } // 5 wide + 1 gap
+// Draw string on the cell canvas; left edge at cell column xStart (may be off-screen for scrolling).
+void drawTextCells(const char* s,int xStart,int topRow,CRGB col){
+  int x=xStart;
+  for(const char* p=s;*p;p++){
+    int gi=glyphIndex(*p);
+    for(int row=0;row<7;row++){
+      uint8_t bits=FONT5x7[gi][row];
+      for(int c=0;c<5;c++) if(bits&(1<<(4-c))){ int cx=x+c; if(cx>=0&&cx<=10) fillCell(topRow+row,cx,col); }
+    }
+    x+=6;
+  }
+}
+
+// ── Mode names (index matches the dispatch switch below) ──
+const char* const ANIM_NAMES[]={
+  "SETUP","HEARTBEAT","BINARY RAIN","TECTONIC","VORTEX","EARTHQUAKE","DNA HELIX",
+  "SUPERNOVA","BLACK HOLE","WORMHOLE","MITOSIS","COLLIDER","SHOCKWAVE","PULSAR",
+  "LIQUID METAL","ICE CROWN","CORIOLIS","CRYSTAL","AURORA","LAVA LAMP","NERVE",
+  "GRAVITY LENS","TIDAL WAVE","CYMATICS","STARFIELD","DARK MATTER","SQUARES",
+  "SQUARE RAIN","DIAMOND","CHECKER","CUBE","SUNSET","DEPTH","COSMIC DUST",
+  "HEARTGLOW","EVOLUTION","MORPH","ATTRACTOR","HARMONIC","AGENT FIELD","TETRIS",
+  "SNAKE","ICONS","LOGO","STAR TUNNEL","RIPPLE","GALAXY","PLASMA","BREATHE",
+  "BOIDS","FIREWORKS","REACTION","TOGA","CASTLE","2026"
+};
+
+// ── Mode-change overlay: scrolls "<n> <NAME>" across the grid ──
+uint32_t overlayUntil=0, overlayStart=0;
+char     overlayBuf[28];
+void triggerOverlay(uint32_t t,int idx){
+  int n=idx+1; char* p=overlayBuf;
+  if(n>=10) *p++=(char)('0'+n/10);
+  *p++=(char)('0'+n%10); *p++=' ';
+  for(const char* s=ANIM_NAMES[idx]; *s && (p-overlayBuf)<26; ) *p++=*s++;
+  *p=0;
+  overlayStart=t;
+  overlayUntil=t+(uint32_t)((11+textPixelWidth(overlayBuf)+2)*60); // ~1 cell / 60ms
+}
+void renderOverlay(uint32_t t){
+  clearFrame();
+  int x=11-(int)((t-overlayStart)/60);
+  drawTextCells(overlayBuf,x,2,CRGB(CHSV((uint8_t)(t/12),230,220)));
+  FastLED.show();
+}
+
+// ═══════════ 0. SETUP / CALIBRATION GRID ═══════════
+// Lights every strip's crossing LEDs so each strip can be aligned:
+// X-strip crossings = red, Y-strip crossings = green, origin = white.
+void anim_setupGrid(uint32_t t){
+  clearFrame();
+  for(int s=1;s<=12;s++)
+    for(int k=0;k<12;k++){
+      setLED(true, s,INTS[k],CRGB(255,0,0));   // X-strip crossings = red
+      setLED(false,s,INTS[k],CRGB(0,255,0));   // Y-strip crossings = green
+    }
+  setLED(true, 1,INTS[0],CRGB(255,255,255));   // origin (X1,Y1) = white
+  setLED(false,1,INTS[0],CRGB(255,255,255));
+  FastLED.show();
+}
+
+// ═══════════ 52-54. SCROLLING TEXT BANNERS ═══════════
+void anim_scrollBanner(const char* s,uint32_t at,uint8_t baseHue){
+  clearFrame();
+  int span=textPixelWidth(s)+11+6;
+  int pos=(int)((at/80)%span);
+  drawTextCells(s,11-pos,2,CRGB(CHSV((uint8_t)(baseHue+at/40),255,220)));
+  FastLED.show();
+}
+void anim_textTOGA(uint32_t at){   anim_scrollBanner("TOGA",  at, 40); }
+void anim_textCASTLE(uint32_t at){ anim_scrollBanner("CASTLE",at,140); }
+void anim_text2026(uint32_t at){   anim_scrollBanner("2026",  at,210); }
+
+#define TOTAL_ANIMS 55
 #define BRI_STEP         5
 #define STROBE_BRI_STEP  10
 #define STROBE_FREQ_STEP 2
@@ -3119,8 +3242,8 @@ void loop() {
   // (handled below — strobe check uses strobeHeld regardless of blackout)
 
   // ── Mode buttons: rising edge only, blocked in blackout ──
-  if((rising>>2)&1&&!strobeActive&&!blackoutActive){cfg.animIndex=(cfg.animIndex+1)%TOTAL_ANIMS;resetAnimState(t);saveSettings();Serial.printf("  →Anim%d\n",cfg.animIndex+1);}
-  if((rising>>6)&1&&!strobeActive&&!blackoutActive){cfg.animIndex=(cfg.animIndex-1+TOTAL_ANIMS)%TOTAL_ANIMS;resetAnimState(t);saveSettings();Serial.printf("  ←Anim%d\n",cfg.animIndex+1);}
+  if((rising>>2)&1&&!strobeActive&&!blackoutActive){cfg.animIndex=(cfg.animIndex+1)%TOTAL_ANIMS;resetAnimState(t);saveSettings();triggerOverlay(t,cfg.animIndex);Serial.printf("  →Anim%d\n",cfg.animIndex+1);}
+  if((rising>>6)&1&&!strobeActive&&!blackoutActive){cfg.animIndex=(cfg.animIndex-1+TOTAL_ANIMS)%TOTAL_ANIMS;resetAnimState(t);saveSettings();triggerOverlay(t,cfg.animIndex);Serial.printf("  ←Anim%d\n",cfg.animIndex+1);}
 
   // ── Value buttons: hold-repeat with acceleration ──
   int valueBtns[] = {0,4,1,5,8,12,9,13,10,14};
@@ -3233,59 +3356,70 @@ void loop() {
     return;
   }
 
+  // ── Mode-change overlay: show number + name briefly ──
+  if(t < overlayUntil){
+    FastLED.setBrightness(cfg.brightness);
+    renderOverlay(t);
+    return;
+  }
+
   // ── Normal animation ──────────────────────────────
   FastLED.setBrightness(cfg.brightness);
   switch(cfg.animIndex){
-    case 0:  anim_heartbeat(at);           break;
-    case 1:  anim_binaryRain(at,dt);       break;
-    case 2:  anim_tectonic(at);            break;
-    case 3:  anim_vortex(at);              break;
-    case 4:  anim_earthquake(t);           break;
-    case 5:  anim_dnaHelix(at);            break;
-    case 6:  anim_supernova(at);           break;
-    case 7:  anim_blackHole(at);           break;
-    case 8:  anim_wormhole(at);            break;
-    case 9:  anim_mitosis(at);             break;
-    case 10: anim_collider(at);            break;
-    case 11: anim_shockwaveChain(at);      break;
-    case 12: anim_pulsar(at);              break;
-    case 13: anim_liquidMetal(at);         break;
-    case 14: anim_iceCrown(at);            break;
-    case 15: anim_coriolisStorm(at);       break;
-    case 16: anim_crystalFracture(at);     break;
-    case 17: anim_aurora(at);              break;
-    case 18: anim_lavaLamp(at,dt);         break;
-    case 19: anim_nerveSystem(at,dt);      break;
-    case 20: anim_gravityLens(at);         break;
-    case 21: anim_tidalWave(at);           break;
-    case 22: anim_cymatics(at);            break;
-    case 23: anim_starfieldWarp(at,dt);    break;
-    case 24: anim_darkMatter(at);          break;
-    case 25: anim_concentricSquares(at);   break;
-    case 26: anim_squareRain(at);          break;
-    case 27: anim_diamondPulse(at);        break;
-    case 28: anim_checkerboardMelt(at);    break;
-    case 29: anim_rotatingCube(at);        break;
-    case 30: anim_sunsetHorizon(at);       break;
-    case 31: anim_depthMap(at);            break;
-    case 32: anim_cosmicDust(at);          break;
-    case 33: anim_heartglow(at);           break;
-    case 34: anim_evolution(at);           break;
-    case 35: anim_morph(at);               break;
-    case 36: anim_strangeAttractor(at,dt); break;
-    case 37: anim_harmonicResonance(at,dt);break;
-    case 38: anim_agentField(at,dt);       break;
-    case 39: anim_tetris(at,dt);           break;
-    case 40: anim_snake(at,dt);            break;
-    case 41: anim_iconShow(at);            break;
-    case 42: anim_bouncingLogo(at,dt);     break;
-    case 43: anim_starTunnel3D(at,dt);     break;
-    case 44: anim_rippleRain(at,dt);       break;
-    case 45: anim_spiralGalaxy(at);        break;
-    case 46: anim_plasmaField(at);         break;
-    case 47: anim_breatheGradient(at);     break;
-    case 48: anim_boids(at,dt);            break;
-    case 49: anim_fireworks(at,dt);        break;
-    case 50: anim_reactionDiff(at,dt);     break;
+    case 0:  anim_setupGrid(at);           break;
+    case 1:  anim_heartbeat(at);           break;
+    case 2:  anim_binaryRain(at,dt);       break;
+    case 3:  anim_tectonic(at);            break;
+    case 4:  anim_vortex(at);              break;
+    case 5:  anim_earthquake(t);           break;
+    case 6:  anim_dnaHelix(at);            break;
+    case 7:  anim_supernova(at);           break;
+    case 8:  anim_blackHole(at);           break;
+    case 9:  anim_wormhole(at);            break;
+    case 10: anim_mitosis(at);             break;
+    case 11: anim_collider(at);            break;
+    case 12: anim_shockwaveChain(at);      break;
+    case 13: anim_pulsar(at);              break;
+    case 14: anim_liquidMetal(at);         break;
+    case 15: anim_iceCrown(at);            break;
+    case 16: anim_coriolisStorm(at);       break;
+    case 17: anim_crystalFracture(at);     break;
+    case 18: anim_aurora(at);              break;
+    case 19: anim_lavaLamp(at,dt);         break;
+    case 20: anim_nerveSystem(at,dt);      break;
+    case 21: anim_gravityLens(at);         break;
+    case 22: anim_tidalWave(at);           break;
+    case 23: anim_cymatics(at);            break;
+    case 24: anim_starfieldWarp(at,dt);    break;
+    case 25: anim_darkMatter(at);          break;
+    case 26: anim_concentricSquares(at);   break;
+    case 27: anim_squareRain(at);          break;
+    case 28: anim_diamondPulse(at);        break;
+    case 29: anim_checkerboardMelt(at);    break;
+    case 30: anim_rotatingCube(at);        break;
+    case 31: anim_sunsetHorizon(at);       break;
+    case 32: anim_depthMap(at);            break;
+    case 33: anim_cosmicDust(at);          break;
+    case 34: anim_heartglow(at);           break;
+    case 35: anim_evolution(at);           break;
+    case 36: anim_morph(at);               break;
+    case 37: anim_strangeAttractor(at,dt); break;
+    case 38: anim_harmonicResonance(at,dt);break;
+    case 39: anim_agentField(at,dt);       break;
+    case 40: anim_tetris(at,dt);           break;
+    case 41: anim_snake(at,dt);            break;
+    case 42: anim_iconShow(at);            break;
+    case 43: anim_bouncingLogo(at,dt);     break;
+    case 44: anim_starTunnel3D(at,dt);     break;
+    case 45: anim_rippleRain(at,dt);       break;
+    case 46: anim_spiralGalaxy(at);        break;
+    case 47: anim_plasmaField(at);         break;
+    case 48: anim_breatheGradient(at);     break;
+    case 49: anim_boids(at,dt);            break;
+    case 50: anim_fireworks(at,dt);        break;
+    case 51: anim_reactionDiff(at,dt);     break;
+    case 52: anim_textTOGA(at);            break;
+    case 53: anim_textCASTLE(at);          break;
+    case 54: anim_text2026(at);            break;
   }
 }
