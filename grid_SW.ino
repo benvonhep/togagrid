@@ -2567,7 +2567,7 @@ void loadSettings() {
   cfg.strobeSquares    = prefs.getUChar("ssq",  30);
   cfg.animSpeed        = prefs.getFloat("spd",  1.0f);
   prefs.end();
-  cfg.animIndex        = constrain(cfg.animIndex, 0, 54);
+  cfg.animIndex        = constrain(cfg.animIndex, 0, 56);
   cfg.brightness       = constrain(cfg.brightness, 1, MAX_BRIGHTNESS);
   cfg.strobeBrightness = constrain(cfg.strobeBrightness, 1, 255);
   cfg.strobeOnMs       = constrain(cfg.strobeOnMs, 5, 200);
@@ -2632,8 +2632,7 @@ const int NUM_ICONS=6;
 // ═══════════ 39. TETRIS ═══════════
 bool tetInit=false;
 static uint8_t tetB[11][11];
-static int8_t  tetP[4][2];
-static int     tetR,tetC;
+static int     tetShape,tetRot,tetR,tetC,tetTargetRot,tetTargetCol;
 static uint8_t tetHue;
 static uint32_t tetStep;
 const int8_t TET_SHAPES[7][4][2]={
@@ -2645,43 +2644,82 @@ const int8_t TET_SHAPES[7][4][2]={
   {{0,-1},{0,0},{0,1},{1,1}}, // J
   {{0,-1},{0,0},{0,1},{1,-1}} // L
 };
-bool tetFits(int r,int c){
-  for(int i=0;i<4;i++){
-    int rr=r+tetP[i][0], cc=c+tetP[i][1];
+// cells of shape s rotated r times → out[4][2]
+void tetCells(int s,int r,int8_t out[4][2]){
+  for(int i=0;i<4;i++){ out[i][0]=TET_SHAPES[s][i][0]; out[i][1]=TET_SHAPES[s][i][1]; }
+  for(int k=0;k<(r&3);k++) for(int i=0;i<4;i++){ int a=out[i][0],b=out[i][1]; out[i][0]=b; out[i][1]=-a; }
+}
+bool tetFitsCells(int8_t cells[4][2],int row,int col){
+  for(int i=0;i<4;i++){ int rr=row+cells[i][0], cc=col+cells[i][1];
     if(cc<0||cc>10||rr>10) return false;
-    if(rr>=0 && tetB[rr][cc]) return false;
-  }
+    if(rr>=0 && tetB[rr][cc]) return false; }
   return true;
 }
+// El-Tetris-style board score: reward line clears, punish height/holes/bumps.
+float tetEval(uint8_t bd[11][11],int lines){
+  int h[11],agg=0,holes=0,bump=0;
+  for(int c=0;c<11;c++){ h[c]=0; for(int r=0;r<11;r++) if(bd[r][c]){ h[c]=11-r; break; } }
+  for(int c=0;c<11;c++){ agg+=h[c]; int top=11-h[c]; for(int r=top+1;r<11;r++) if(!bd[r][c]) holes++; }
+  for(int c=0;c<10;c++){ int d=h[c]-h[c+1]; bump+=d<0?-d:d; }
+  return 0.80f*lines - 0.51f*agg - 0.36f*holes - 0.18f*bump;
+}
+// Pick the best rotation+column for the current piece (plays to survive/clear).
+void tetPlan(){
+  float best=-1e30f; int bestR=0,bestC=5; int8_t cells[4][2];
+  for(int r=0;r<4;r++){
+    tetCells(tetShape,r,cells);
+    for(int col=-1;col<=11;col++){
+      if(!tetFitsCells(cells,-1,col)) continue;
+      int row=-1; while(tetFitsCells(cells,row+1,col)) row++;   // hard drop
+      uint8_t tmp[11][11]; bool ok=true;
+      for(int a=0;a<11;a++) for(int b=0;b<11;b++) tmp[a][b]=tetB[a][b];
+      for(int i=0;i<4;i++){ int rr=row+cells[i][0],cc=col+cells[i][1]; if(rr<0){ok=false;break;} tmp[rr][cc]=1; }
+      if(!ok) continue;
+      int lines=0;
+      for(int rr=10;rr>=0;rr--){ bool full=true; for(int c=0;c<11;c++) if(!tmp[rr][c]) full=false;
+        if(full){ lines++; for(int r2=rr;r2>0;r2--) for(int c=0;c<11;c++) tmp[r2][c]=tmp[r2-1][c];
+                  for(int c=0;c<11;c++) tmp[0][c]=0; rr++; } }
+      float sc=tetEval(tmp,lines);
+      if(sc>best){ best=sc; bestR=r; bestC=col; }
+    }
+  }
+  tetTargetRot=bestR; tetTargetCol=bestC;
+}
 void tetNew(){
-  int s=random(7);
-  for(int i=0;i<4;i++){ tetP[i][0]=TET_SHAPES[s][i][0]; tetP[i][1]=TET_SHAPES[s][i][1]; }
-  int rot=random(4);
-  for(int k=0;k<rot;k++) for(int i=0;i<4;i++){ int a=tetP[i][0],b=tetP[i][1]; tetP[i][0]=b; tetP[i][1]=-a; }
+  tetShape=random(7); tetRot=0; tetR=-1; tetC=5;
   tetHue=random(256); if(tetHue==0) tetHue=1;
-  tetR=0; tetC=3+random(5);
-  if(!tetFits(tetR,tetC)) for(int d=-4;d<=4;d++) if(tetFits(0,tetC+d)){ tetC+=d; break; }
-  if(!tetFits(tetR,tetC)) for(int a=0;a<11;a++) for(int b=0;b<11;b++) tetB[a][b]=0; // board full -> reset
+  int8_t cells[4][2]; tetCells(tetShape,0,cells);
+  if(!tetFitsCells(cells,tetR,tetC)) for(int a=0;a<11;a++) for(int b=0;b<11;b++) tetB[a][b]=0; // full → restart
+  tetPlan();
 }
 void anim_tetris(uint32_t at,float dt){
-  if(!tetInit){ for(int a=0;a<11;a++) for(int b=0;b<11;b++) tetB[a][b]=0; tetStep=at; tetNew(); tetInit=true; }
-  if(at-tetStep>=180){
+  if(!tetInit){ for(int a=0;a<11;a++) for(int b=0;b<11;b++) tetB[a][b]=0; tetStep=at; tetInit=true; tetNew(); }
+  if(at-tetStep>=300){                                 // slow, deliberate play
     tetStep=at;
-    if(tetFits(tetR+1,tetC)) tetR++;
-    else {
-      for(int i=0;i<4;i++){ int rr=tetR+tetP[i][0], cc=tetC+tetP[i][1]; if(rr>=0&&rr<=10&&cc>=0&&cc<=10) tetB[rr][cc]=tetHue; }
-      // clear full rows (top-down copy)
-      for(int r=10;r>=0;r--){
-        bool full=true; for(int c=0;c<11;c++) if(!tetB[r][c]) full=false;
+    int8_t cur[4][2]; tetCells(tetShape,tetRot,cur);
+    if(tetRot!=tetTargetRot){                           // 1) turn the piece
+      int nr=(tetRot+1)&3; int8_t rc[4][2]; tetCells(tetShape,nr,rc);
+      if(tetFitsCells(rc,tetR,tetC)) tetRot=nr;
+      else if(tetFitsCells(rc,tetR,tetC-1)){ tetRot=nr; tetC--; }
+      else if(tetFitsCells(rc,tetR,tetC+1)){ tetRot=nr; tetC++; }
+      else tetTargetRot=tetRot;
+    } else if(tetC!=tetTargetCol){                       // 2) slide toward target column
+      int dir=tetTargetCol>tetC?1:-1; int8_t rc[4][2]; tetCells(tetShape,tetRot,rc);
+      if(tetFitsCells(rc,tetR,tetC+dir)) tetC+=dir; else tetTargetCol=tetC;
+    } else if(tetFitsCells(cur,tetR+1,tetC)){            // 3) fall
+      tetR++;
+    } else {                                            // lock, clear lines, next
+      for(int i=0;i<4;i++){ int rr=tetR+cur[i][0],cc=tetC+cur[i][1]; if(rr>=0&&rr<=10&&cc>=0&&cc<=10) tetB[rr][cc]=tetHue; }
+      for(int r=10;r>=0;r--){ bool full=true; for(int c=0;c<11;c++) if(!tetB[r][c]) full=false;
         if(full){ for(int rr=r;rr>0;rr--) for(int c=0;c<11;c++) tetB[rr][c]=tetB[rr-1][c];
-                  for(int c=0;c<11;c++) tetB[0][c]=0; r++; }
-      }
+                  for(int c=0;c<11;c++) tetB[0][c]=0; r++; } }
       tetNew();
     }
   }
   clearFrame();
   for(int r=0;r<11;r++) for(int c=0;c<11;c++) if(tetB[r][c]) fillCell(r,c,CRGB(CHSV(tetB[r][c],220,160)));
-  for(int i=0;i<4;i++){ int rr=tetR+tetP[i][0], cc=tetC+tetP[i][1]; if(rr>=0) fillCell(rr,cc,CRGB(CHSV(tetHue,255,235))); }
+  int8_t cur[4][2]; tetCells(tetShape,tetRot,cur);
+  for(int i=0;i<4;i++){ int rr=tetR+cur[i][0], cc=tetC+cur[i][1]; if(rr>=0) fillCell(rr,cc,CRGB(CHSV(tetHue,255,235))); }
   FastLED.show();
 }
 
@@ -3003,47 +3041,70 @@ void anim_reactionDiff(uint32_t at,float dt){
 //  TEXT / FONT SYSTEM  (5x7 glyphs on the 11x11 cell canvas)
 //  Used by the banner modes and the mode-change overlay.
 // ═══════════════════════════════════════════════════════
-// FONT3x5[glyph][row], 5 bits/row (bit4 = leftmost column), 3 rows tall.
-// Very short (3 cells → ~4 strip-lines) but still distinguishable.
-// glyph index: 0=space, 1..26 = A..Z, 27..36 = 0..9
-const uint8_t FONT3x5[37][3]={
-  {0,0,0},                       // ' '
-  {0b01110,0b11111,0b10001},     // A
-  {0b11110,0b11110,0b11111},     // B
-  {0b01111,0b10000,0b01111},     // C
-  {0b11110,0b10001,0b11110},     // D
-  {0b11111,0b11110,0b11111},     // E
-  {0b11111,0b11110,0b10000},     // F
-  {0b01110,0b10011,0b01111},     // G
-  {0b10001,0b11111,0b10001},     // H
-  {0b11111,0b00100,0b11111},     // I
-  {0b00111,0b00010,0b11110},     // J
-  {0b10010,0b11100,0b10010},     // K
-  {0b10000,0b10000,0b11111},     // L
-  {0b10001,0b11011,0b10101},     // M
-  {0b11001,0b10101,0b10011},     // N
-  {0b01110,0b10001,0b01110},     // O
-  {0b11110,0b11110,0b10000},     // P
-  {0b01110,0b10101,0b01111},     // Q
-  {0b11110,0b11110,0b10011},     // R
-  {0b01111,0b01110,0b11110},     // S
-  {0b11111,0b00100,0b00100},     // T
-  {0b10001,0b10001,0b01110},     // U
-  {0b10001,0b01010,0b00100},     // V
-  {0b10001,0b10101,0b01110},     // W
-  {0b10001,0b01110,0b10001},     // X
-  {0b10001,0b01110,0b00100},     // Y
-  {0b11111,0b00110,0b11111},     // Z
-  {0b11111,0b10001,0b11111},     // 0
-  {0b01100,0b00100,0b01110},     // 1
-  {0b11110,0b00100,0b01111},     // 2
-  {0b11110,0b01110,0b11110},     // 3
-  {0b10010,0b11111,0b00010},     // 4
-  {0b11111,0b11110,0b01111},     // 5
-  {0b11110,0b11111,0b01111},     // 6
-  {0b11111,0b00010,0b00100},     // 7
-  {0b11111,0b01110,0b11111},     // 8
-  {0b11111,0b01111,0b00011}      // 9
+// ── 7-segment (DSEG7-style) text, drawn with STRIP SEGMENTS ──
+// Each glyph is ONE cell wide x TWO cells tall. A "segment" is a single
+// strip-segment between two adjacent intersections — i.e. one LED strip
+// wide — so "1"/"I" is a thin vertical line, not a filled cell.
+// Node (R,C), R,C in 0..11: horizontal segment = piece of Y strip R+1
+// between X-cols C..C+1; vertical segment = piece of X strip C+1 between
+// Y-rows R..R+1. (Corner LEDs at intersections are left dark, like a
+// real 7-seg display where segments don't touch.)
+void drawHSeg(int R,int C,CRGB col){        // horizontal → Y strip R+1
+  if(R<0||R>11||C<0||C>10) return;
+  for(int led=INTS[C]+1; led<INTS[C+1]; led++) setLED(false,R+1,led,col);
+}
+void drawVSeg(int R,int C,CRGB col){        // vertical → X strip C+1
+  if(R<0||R>10||C<0||C>11) return;
+  for(int led=INTS[R]+1; led<INTS[R+1]; led++) setLED(true,C+1,led,col);
+}
+// 12-segment stroke font: each glyph is 2 cells wide x 2 cells tall
+// (a 3x3 node grid). The centre column + centre row let us draw proper
+// letters (real G, R, K, M, N…) rather than calculator digits.
+//   n--TL--n--TR--n
+//   |LU     |CU    |RU
+//   n--ML--n--MR--n
+//   |LL     |CL    |RL
+//   n--BL--n--BR--n
+enum { sTL=1,sTR=2,sML=4,sMR=8,sBL=16,sBR=32,
+       sLU=64,sLL=128,sCU=256,sCL=512,sRU=1024,sRL=2048 };
+const uint16_t FONTW[37]={
+  0,                                              // ' '
+  sTL|sTR|sLU|sLL|sRU|sRL|sML|sMR,                // A
+  sTL|sTR|sLU|sLL|sRU|sRL|sML|sMR|sBL|sBR,        // B (~8)
+  sTL|sTR|sLU|sLL|sBL|sBR,                        // C
+  sTL|sTR|sLU|sLL|sRU|sRL|sBL|sBR,                // D (~O)
+  sTL|sTR|sLU|sLL|sML|sMR|sBL|sBR,                // E
+  sTL|sTR|sLU|sLL|sML|sMR,                        // F
+  sTL|sTR|sLU|sLL|sBL|sBR|sRL|sMR,                // G
+  sLU|sLL|sRU|sRL|sML|sMR,                        // H
+  sTL|sTR|sBL|sBR|sCU|sCL,                        // I
+  sRU|sRL|sBL|sBR|sLL,                            // J
+  sLU|sLL|sMR|sRU|sRL,                            // K
+  sLU|sLL|sBL|sBR,                                // L
+  sLU|sLL|sRU|sRL|sTL|sTR|sCU,                    // M
+  sLU|sLL|sRU|sRL|sCU|sCL,                        // N
+  sTL|sTR|sLU|sLL|sRU|sRL|sBL|sBR,                // O
+  sTL|sTR|sLU|sLL|sML|sMR|sRU,                    // P
+  sTL|sTR|sLU|sLL|sRU|sRL|sBL|sBR|sCL,            // Q
+  sTL|sTR|sLU|sLL|sML|sMR|sRU|sRL,                // R
+  sTL|sTR|sLU|sML|sMR|sRL|sBL|sBR,                // S
+  sTL|sTR|sCU|sCL,                                // T
+  sLU|sLL|sRU|sRL|sBL|sBR,                        // U
+  sLU|sLL|sRU|sRL|sBL|sBR,                        // V (~U)
+  sLU|sLL|sRU|sRL|sBL|sBR|sCL,                    // W
+  sLU|sRU|sCU|sCL|sLL|sRL,                        // X (approx)
+  sLU|sRU|sCU|sCL,                                // Y
+  sTL|sTR|sMR|sCL|sBL|sBR,                        // Z (approx)
+  sTL|sTR|sLU|sLL|sRU|sRL|sBL|sBR,                // 0
+  sCU|sCL,                                        // 1
+  sTL|sTR|sRU|sML|sMR|sLL|sBL|sBR,                // 2
+  sTL|sTR|sRU|sML|sMR|sRL|sBL|sBR,                // 3
+  sLU|sML|sMR|sRU|sRL,                            // 4
+  sTL|sTR|sLU|sML|sMR|sRL|sBL|sBR,                // 5
+  sTL|sTR|sLU|sLL|sML|sMR|sRL|sBL|sBR,            // 6
+  sTL|sTR|sRU|sRL,                                // 7
+  sTL|sTR|sLU|sLL|sRU|sRL|sML|sMR|sBL|sBR,        // 8
+  sTL|sTR|sLU|sRU|sRL|sML|sMR|sBL|sBR             // 9
 };
 int glyphIndex(char c){
   if(c>='a'&&c<='z') c-=32;
@@ -3051,18 +3112,26 @@ int glyphIndex(char c){
   if(c>='0'&&c<='9') return c-'0'+27;
   return 0; // space / unknown
 }
-int textPixelWidth(const char* s){ int n=0; while(*s++) n++; return n*6-1; } // 5 wide + 1 gap
-// Draw string on the cell canvas; left edge at cell column xStart (may be off-screen for scrolling).
-void drawTextCells(const char* s,int xStart,int topRow,CRGB col){
-  int x=xStart;
-  for(const char* p=s;*p;p++){
-    int gi=glyphIndex(*p);
-    for(int row=0;row<3;row++){
-      uint8_t bits=FONT3x5[gi][row];
-      for(int c=0;c<5;c++) if(bits&(1<<(4-c))){ int cx=x+c; if(cx>=0&&cx<=10) fillCell(topRow+row,cx,col); }
-    }
-    x+=6;
-  }
+// Draw one glyph with top-left node (topR,C). Box spans nodes topR..topR+2, C..C+2.
+void drawGlyphW(uint16_t s,int topR,int C,CRGB col){
+  if(s&sTL) drawHSeg(topR,   C,   col);
+  if(s&sTR) drawHSeg(topR,   C+1, col);
+  if(s&sML) drawHSeg(topR+1, C,   col);
+  if(s&sMR) drawHSeg(topR+1, C+1, col);
+  if(s&sBL) drawHSeg(topR+2, C,   col);
+  if(s&sBR) drawHSeg(topR+2, C+1, col);
+  if(s&sLU) drawVSeg(topR,   C,   col);
+  if(s&sLL) drawVSeg(topR+1, C,   col);
+  if(s&sCU) drawVSeg(topR,   C+1, col);
+  if(s&sCL) drawVSeg(topR+1, C+1, col);
+  if(s&sRU) drawVSeg(topR,   C+2, col);
+  if(s&sRL) drawVSeg(topR+1, C+2, col);
+}
+// Width / draw in node-columns (3 per char: 2 wide glyph + 1 gap).
+int textLenNodes(const char* s){ int n=0; while(*s++) n++; return n*3; }
+void drawTextCells(const char* s,int leftC,int topR,CRGB col){
+  int C=leftC;
+  for(const char* p=s;*p;p++){ drawGlyphW(FONTW[glyphIndex(*p)],topR,C,col); C+=3; }
 }
 
 // ── Mode names (index matches the dispatch switch below) ──
@@ -3074,18 +3143,18 @@ const char* const ANIM_NAMES[]={
   "SQUARE RAIN","DIAMOND","CHECKER","CUBE","SUNSET","DEPTH","COSMIC DUST",
   "HEARTGLOW","EVOLUTION","MORPH","ATTRACTOR","HARMONIC","AGENT FIELD","TETRIS",
   "SNAKE","ICONS","LOGO","STAR TUNNEL","RIPPLE","GALAXY","PLASMA","BREATHE",
-  "BOIDS","FIREWORKS","REACTION","TOGA","CASTLE","2026"
+  "BOIDS","FIREWORKS","REACTION","TOGA","CASTLE","2026","STICKMAN","BREAKOUT"
 };
 
 // ── Mode-change overlay: mode NUMBER held static & centered for a
 //    moment, then the NAME scrolls past slowly. Text is centred at
 //    row 3 (5-tall font → rows 3..7).
 uint32_t overlayUntil=0, overlayStart=0;
-char     overlayNum[4];    // "40"
-char     overlayName[24];  // "REACTION"
-#define OVL_HOLD 1000      // ms the number stays fixed in the middle
-#define OVL_STEP 100       // ms per cell while the name scrolls (slow)
-#define TEXT_ROW 4         // top row for the 3-tall font (centres it: rows 4..6)
+char     overlayNum[4];     // "40"
+char     overlayName[24];   // "TETRIS"
+#define OVL_HOLD 1300       // ms the mode number stays fixed & centred
+#define OVL_STEP 380        // ms per node-column while the name scrolls (slow)
+#define TEXT_TOP 4          // top node row (glyphs 2 cells tall → rows 4..6)
 void triggerOverlay(uint32_t t,int idx){
   int n=idx+1; char* p=overlayNum;
   if(n>=10) *p++=(char)('0'+n/10);
@@ -3094,18 +3163,18 @@ void triggerOverlay(uint32_t t,int idx){
   for(const char* s=ANIM_NAMES[idx]; *s && (q-overlayName)<22; ) *q++=*s++;
   *q=0;
   overlayStart=t;
-  overlayUntil=t+OVL_HOLD+(uint32_t)((11+textPixelWidth(overlayName)+2)*OVL_STEP);
+  overlayUntil=t+OVL_HOLD+(uint32_t)((12+textLenNodes(overlayName)+3)*OVL_STEP);
 }
 void renderOverlay(uint32_t t){
   clearFrame();
-  uint32_t el=t-overlayStart;
   CRGB col=CRGB(CHSV((uint8_t)(t/16),230,220));
+  uint32_t el=t-overlayStart;
   if(el<OVL_HOLD){
-    int w=textPixelWidth(overlayNum);
-    drawTextCells(overlayNum,(11-w)/2,TEXT_ROW,col);   // number fixed & centred
+    int w=textLenNodes(overlayNum)-1;
+    drawTextCells(overlayNum,(11-w)/2,TEXT_TOP,col);   // number fixed & centred
   } else {
-    int x=11-(int)((el-OVL_HOLD)/OVL_STEP);             // name scrolls slowly
-    drawTextCells(overlayName,x,TEXT_ROW,col);
+    int x=12-(int)((el-OVL_HOLD)/OVL_STEP);
+    drawTextCells(overlayName,x,TEXT_TOP,col);          // name scrolls slowly
   }
   FastLED.show();
 }
@@ -3128,16 +3197,84 @@ void anim_setupGrid(uint32_t t){
 // ═══════════ 52-54. SCROLLING TEXT BANNERS ═══════════
 void anim_scrollBanner(const char* s,uint32_t at,uint8_t baseHue){
   clearFrame();
-  int span=textPixelWidth(s)+11+6;
-  int pos=(int)((at/150)%span);   // slower scroll
-  drawTextCells(s,11-pos,TEXT_ROW,CRGB(CHSV((uint8_t)(baseHue+at/60),255,220)));
+  int w=textLenNodes(s)-1;   // glyph width in node-columns
+  CRGB col=CRGB(CHSV((uint8_t)(baseHue+at/60),255,220));
+  if(w<=11){
+    drawTextCells(s,(11-w)/2,TEXT_TOP,col);          // fits → static, centred
+  } else {
+    int span=w+12+3, pos=(int)((at/700)%span);        // too wide → slow scroll
+    drawTextCells(s,12-pos,TEXT_TOP,col);
+  }
   FastLED.show();
 }
 void anim_textTOGA(uint32_t at){   anim_scrollBanner("TOGA",  at, 40); }
 void anim_textCASTLE(uint32_t at){ anim_scrollBanner("CASTLE",at,140); }
 void anim_text2026(uint32_t at){   anim_scrollBanner("2026",  at,210); }
 
-#define TOTAL_ANIMS 55
+// ═══════════ 55. STICK FIGURE (Strichmännchen) walking ═══════════
+bool stickInit=false;
+static float stkX; static int stkDir;
+void anim_stickman(uint32_t at,float dt){
+  if(!stickInit){ stkX=2.0f; stkDir=1; stickInit=true; }
+  stkX += stkDir*dt*0.0012f;                 // slow walk across
+  if(stkX>9.0f){ stkX=9.0f; stkDir=-1; }
+  if(stkX<2.0f){ stkX=2.0f; stkDir=1; }
+  int C=(int)(stkX+0.5f);                     // body axis (X strip at node col C)
+  bool f=((at/430)&1);                        // slow 2-frame walk cycle
+  CRGB col=CRGB(CHSV(35,180,235));
+  clearFrame();
+  // head: 2-cell box centred over the axis
+  fillCell(1,C-1,col); fillCell(1,C,col);
+  // torso: vertical line, nodes rows 2..5
+  drawVSeg(2,C,col); drawVSeg(3,C,col); drawVSeg(4,C,col);
+  // arms swing: out on one frame, down on the other
+  if(f){ drawHSeg(3,C-1,col); drawHSeg(3,C,col); }        // arms out
+  else { drawVSeg(3,C-1,col); drawVSeg(3,C+1,col); }      // arms down
+  // hips
+  drawHSeg(5,C-1,col); drawHSeg(5,C,col);
+  // legs stride: leading leg long with a foot, trailing leg short
+  if(f){
+    drawVSeg(5,C-1,col); drawVSeg(6,C-1,col); drawHSeg(7,C-1,col); // left leg forward + foot
+    drawVSeg(5,C+1,col);                                           // right leg back
+  } else {
+    drawVSeg(5,C+1,col); drawVSeg(6,C+1,col); drawHSeg(7,C,col);   // right leg forward + foot
+    drawVSeg(5,C-1,col);                                           // left leg back
+  }
+  FastLED.show();
+}
+
+// ═══════════ 56. PADDLE & BALL (keep the ball up / Breakout) ═══════════
+bool padInit=false;
+static float pbBx,pbBy,pbVx,pbVy,pbPx;
+static bool pbBrick[3][11];
+void anim_paddleBall(uint32_t at,float dt){
+  if(!padInit){
+    for(int r=0;r<3;r++) for(int c=0;c<11;c++) pbBrick[r][c]=true;
+    pbBx=5; pbBy=6; pbVx=0.006f; pbVy=-0.006f; pbPx=5; padInit=true;
+  }
+  pbBx+=pbVx*dt; pbBy+=pbVy*dt;
+  if(pbBx<0){ pbBx=0; pbVx=-pbVx; }
+  if(pbBx>10){ pbBx=10; pbVx=-pbVx; }
+  if(pbBy<0){ pbBy=0; pbVy=-pbVy; }
+  // paddle auto-tracks the ball
+  if(pbPx<pbBx-0.1f) pbPx+=0.006f*dt; else if(pbPx>pbBx+0.1f) pbPx-=0.006f*dt;
+  pbPx=constrain(pbPx,1.0f,9.0f);
+  int bc=(int)(pbBx+0.5f), br=(int)(pbBy+0.5f), pc=(int)(pbPx+0.5f);
+  if(br>=0&&br<3&&bc>=0&&bc<11&&pbBrick[br][bc]){ pbBrick[br][bc]=false; pbVy=-pbVy; } // break brick
+  if(pbBy>=9.0f){                                  // paddle line
+    if(bc>=pc-1&&bc<=pc+1){ pbBy=9.0f; pbVy=-fabsf(pbVy); }   // bounce off paddle
+    else if(pbBy>11.0f){ pbBx=5; pbBy=6; pbVx=(random(2)?0.006f:-0.006f); pbVy=-0.006f; } // missed → respawn
+  }
+  bool any=false; for(int r=0;r<3;r++) for(int c=0;c<11;c++) if(pbBrick[r][c]) any=true;
+  if(!any) for(int r=0;r<3;r++) for(int c=0;c<11;c++) pbBrick[r][c]=true;   // refill
+  clearFrame();
+  for(int r=0;r<3;r++) for(int c=0;c<11;c++) if(pbBrick[r][c]) fillCell(r,c,CRGB(CHSV((uint8_t)(c*18+r*50),220,150)));
+  fillCell(10,pc-1,CRGB(CHSV(140,220,200))); fillCell(10,pc,CRGB(CHSV(140,220,200))); fillCell(10,pc+1,CRGB(CHSV(140,220,200)));
+  fillCell(br,bc,CRGB(255,255,255));
+  FastLED.show();
+}
+
+#define TOTAL_ANIMS 57
 #define BRI_STEP         5
 #define STROBE_BRI_STEP  10
 #define STROBE_FREQ_STEP 2
@@ -3151,6 +3288,7 @@ void resetAnimState(uint32_t t) {
   nerveInit=false;starInit=false;pendInit=false;sqRainInit=false;golInit=false;
   evoInit=false;morphInit=false;wvInit=false;lorInit=false;hrInit=false;nfInit=false;plInit=false;
   tetInit=false;snakeInit=false;logoInit=false;stunInit=false;rripInit=false;boidInit=false;fwInit=false;rdInit=false;
+  stickInit=false;padInit=false;
   strikeTime=t;collideStrike=t;
   epiX=(random(80)-40);epiY=(random(80)-40);
   clearAll();delay(100);
@@ -3437,5 +3575,7 @@ void loop() {
     case 52: anim_textTOGA(at);            break;
     case 53: anim_textCASTLE(at);          break;
     case 54: anim_text2026(at);            break;
+    case 55: anim_stickman(at,dt);         break;
+    case 56: anim_paddleBall(at,dt);       break;
   }
 }

@@ -35,7 +35,7 @@ typedef struct {
   bool    blackoutActive;
 } SyncMsg;
 
-#define TOTAL_ANIMS      55
+#define TOTAL_ANIMS      57
 #define BRI_STEP         5
 #define STROBE_BRI_STEP  10
 #define STROBE_FREQ_STEP 2
@@ -65,7 +65,7 @@ void loadSenderSettings() {
   ss.animSpeed        = p.getFloat("spd",1.0f);
   ss.blackoutActive   = false;
   p.end();
-  ss.animIndex        = constrain(ss.animIndex,0,54);
+  ss.animIndex        = constrain(ss.animIndex,0,56);
   ss.brightness       = constrain(ss.brightness,1,255);
   ss.strobeBrightness = constrain(ss.strobeBrightness,1,255);
   ss.strobeOnMs       = constrain(ss.strobeOnMs,5,200);
