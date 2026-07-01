@@ -2567,7 +2567,7 @@ void loadSettings() {
   cfg.strobeSquares    = prefs.getUChar("ssq",  30);
   cfg.animSpeed        = prefs.getFloat("spd",  1.0f);
   prefs.end();
-  cfg.animIndex        = constrain(cfg.animIndex, 0, 56);
+  cfg.animIndex        = constrain(cfg.animIndex, 0, 58);
   cfg.brightness       = constrain(cfg.brightness, 1, MAX_BRIGHTNESS);
   cfg.strobeBrightness = constrain(cfg.strobeBrightness, 1, 255);
   cfg.strobeOnMs       = constrain(cfg.strobeOnMs, 5, 200);
@@ -2635,6 +2635,8 @@ static uint8_t tetB[11][11];
 static int     tetShape,tetRot,tetR,tetC,tetTargetRot,tetTargetCol;
 static uint8_t tetHue;
 static uint32_t tetStep;
+static bool     tetClearing, tetFull[11];    // line-clear flash state
+static uint8_t  tetFlashCnt; static uint32_t tetFlashT;
 const int8_t TET_SHAPES[7][4][2]={
   {{0,-1},{0,0},{0,1},{0,2}}, // I
   {{0,0},{0,1},{1,0},{1,1}},  // O
@@ -2693,8 +2695,19 @@ void tetNew(){
   tetPlan();
 }
 void anim_tetris(uint32_t at,float dt){
-  if(!tetInit){ for(int a=0;a<11;a++) for(int b=0;b<11;b++) tetB[a][b]=0; tetStep=at; tetInit=true; tetNew(); }
-  if(at-tetStep>=300){                                 // slow, deliberate play
+  if(!tetInit){ for(int a=0;a<11;a++) for(int b=0;b<11;b++) tetB[a][b]=0; tetStep=at; tetInit=true; tetClearing=false; tetNew(); }
+  if(tetClearing){                                     // full rows flash twice, then clear
+    if(at-tetFlashT>=170){
+      tetFlashT=at;
+      if(tetFlashCnt>0) tetFlashCnt--;
+      if(tetFlashCnt==0){
+        for(int r=10;r>=0;r--){ bool full=true; for(int c=0;c<11;c++) if(!tetB[r][c]) full=false;
+          if(full){ for(int rr=r;rr>0;rr--) for(int c=0;c<11;c++) tetB[rr][c]=tetB[rr-1][c];
+                    for(int c=0;c<11;c++) tetB[0][c]=0; r++; } }
+        tetClearing=false; tetNew();
+      }
+    }
+  } else if(at-tetStep>=300){                           // slow, deliberate play
     tetStep=at;
     int8_t cur[4][2]; tetCells(tetShape,tetRot,cur);
     if(tetRot!=tetTargetRot){                           // 1) turn the piece
@@ -2708,18 +2721,22 @@ void anim_tetris(uint32_t at,float dt){
       if(tetFitsCells(rc,tetR,tetC+dir)) tetC+=dir; else tetTargetCol=tetC;
     } else if(tetFitsCells(cur,tetR+1,tetC)){            // 3) fall
       tetR++;
-    } else {                                            // lock, clear lines, next
+    } else {                                            // lock; if rows completed, start the flash
       for(int i=0;i<4;i++){ int rr=tetR+cur[i][0],cc=tetC+cur[i][1]; if(rr>=0&&rr<=10&&cc>=0&&cc<=10) tetB[rr][cc]=tetHue; }
-      for(int r=10;r>=0;r--){ bool full=true; for(int c=0;c<11;c++) if(!tetB[r][c]) full=false;
-        if(full){ for(int rr=r;rr>0;rr--) for(int c=0;c<11;c++) tetB[rr][c]=tetB[rr-1][c];
-                  for(int c=0;c<11;c++) tetB[0][c]=0; r++; } }
-      tetNew();
+      bool any=false;
+      for(int r=0;r<11;r++){ bool full=true; for(int c=0;c<11;c++) if(!tetB[r][c]) full=false; tetFull[r]=full; if(full) any=true; }
+      if(any){ tetClearing=true; tetFlashCnt=4; tetFlashT=at; }   // 4 toggles → two white flashes
+      else tetNew();
     }
   }
   clearFrame();
   for(int r=0;r<11;r++) for(int c=0;c<11;c++) if(tetB[r][c]) fillCell(r,c,CRGB(CHSV(tetB[r][c],220,160)));
-  int8_t cur[4][2]; tetCells(tetShape,tetRot,cur);
-  for(int i=0;i<4;i++){ int rr=tetR+cur[i][0], cc=tetC+cur[i][1]; if(rr>=0) fillCell(rr,cc,CRGB(CHSV(tetHue,255,235))); }
+  if(tetClearing){
+    if(tetFlashCnt&1) for(int r=0;r<11;r++) if(tetFull[r]) for(int c=0;c<11;c++) fillCell(r,c,CRGB(255,255,255));
+  } else {
+    int8_t cur[4][2]; tetCells(tetShape,tetRot,cur);
+    for(int i=0;i<4;i++){ int rr=tetR+cur[i][0], cc=tetC+cur[i][1]; if(rr>=0) fillCell(rr,cc,CRGB(CHSV(tetHue,255,235))); }
+  }
   FastLED.show();
 }
 
@@ -3143,7 +3160,7 @@ const char* const ANIM_NAMES[]={
   "SQUARE RAIN","DIAMOND","CHECKER","CUBE","SUNSET","DEPTH","COSMIC DUST",
   "HEARTGLOW","EVOLUTION","MORPH","ATTRACTOR","HARMONIC","AGENT FIELD","TETRIS",
   "SNAKE","ICONS","LOGO","STAR TUNNEL","RIPPLE","GALAXY","PLASMA","BREATHE",
-  "BOIDS","FIREWORKS","REACTION","TOGA","CASTLE","2026","STICKMAN","BREAKOUT"
+  "BOIDS","FIREWORKS","REACTION","TOGA","CASTLE","2026","STICKMAN","BREAKOUT","SMILEY","EYE"
 };
 
 // ── Mode-change overlay: mode NUMBER held static & centered for a
@@ -3152,8 +3169,8 @@ const char* const ANIM_NAMES[]={
 uint32_t overlayUntil=0, overlayStart=0;
 char     overlayNum[4];     // "40"
 char     overlayName[24];   // "TETRIS"
-#define OVL_HOLD 1300       // ms the mode number stays fixed & centred
-#define OVL_STEP 380        // ms per node-column while the name scrolls (slow)
+#define OVL_HOLD 400        // ms the mode number stays fixed & centred
+#define OVL_STEP 70         // ms per node-column while the name scrolls
 #define TEXT_TOP 4          // top node row (glyphs 2 cells tall → rows 4..6)
 void triggerOverlay(uint32_t t,int idx){
   int n=idx+1; char* p=overlayNum;
@@ -3163,7 +3180,7 @@ void triggerOverlay(uint32_t t,int idx){
   for(const char* s=ANIM_NAMES[idx]; *s && (q-overlayName)<22; ) *q++=*s++;
   *q=0;
   overlayStart=t;
-  overlayUntil=t+OVL_HOLD+(uint32_t)((12+textLenNodes(overlayName)+3)*OVL_STEP);
+  overlayUntil=t+1100;       // show for ~1 second total, then resume the animation
 }
 void renderOverlay(uint32_t t){
   clearFrame();
@@ -3214,27 +3231,44 @@ void anim_text2026(uint32_t at){   anim_scrollBanner("2026",  at,210); }
 // ═══════════ 55. RUNNER (Strichmännchen jump'n'run, Mario-style) ═══════════
 bool stickInit=false;
 #define RUN_OBS 4
-static float rnObsX[RUN_OBS]; static uint8_t rnObsH[RUN_OBS]; static bool rnObsOn[RUN_OBS];
+static float rnObsX[RUN_OBS]; static uint8_t rnObsType[RUN_OBS]; static bool rnObsOn[RUN_OBS];
 static float rnJumpH,rnJumpV; static bool rnJumping; static uint32_t rnSpawn;
+// Obstacle shapes sitting on the ground (g = top ground cell row = GND-1).
+void rnDrawObstacle(int t,int ox,int GND){
+  int g=GND-1;
+  if(t==0){                                   // rock / bush (low, wide)
+    CRGB rk=CRGB(CHSV(0,0,110));
+    fillCell(g,ox,rk); fillCell(g,ox+1,rk);
+  } else if(t==1){                            // box
+    CRGB bx=CRGB(CHSV(18,210,190));
+    fillCell(g,ox,bx); fillCell(g-1,ox,bx);
+  } else if(t==2){                            // cactus
+    CRGB ca=CRGB(CHSV(80,230,160));
+    fillCell(g,ox,ca); fillCell(g-1,ox,ca); fillCell(g-2,ox,ca); fillCell(g-1,ox+1,ca);
+  } else {                                    // tree (trunk + canopy)
+    CRGB tr=CRGB(CHSV(22,220,130)), lf=CRGB(CHSV(90,230,150));
+    fillCell(g,ox,tr);
+    fillCell(g-1,ox-1,lf); fillCell(g-1,ox,lf); fillCell(g-1,ox+1,lf);
+    fillCell(g-2,ox,lf);
+  }
+}
 void anim_stickman(uint32_t at,float dt){
   const int RX=2, GND=9;                       // runner column / ground node row
   if(!stickInit){ for(int i=0;i<RUN_OBS;i++) rnObsOn[i]=false; rnJumpH=0;rnJumpV=0;rnJumping=false; rnSpawn=at; stickInit=true; }
   // world scrolls: obstacles move left toward the runner
-  for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ rnObsX[i]-=0.006f*dt; if(rnObsX[i]<-1.5f) rnObsOn[i]=false; }
+  for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ rnObsX[i]-=0.006f*dt; if(rnObsX[i]<-2.0f) rnObsOn[i]=false; }
   if(at-rnSpawn>1500){ rnSpawn=at;
-    for(int i=0;i<RUN_OBS;i++) if(!rnObsOn[i]){ rnObsX[i]=11.5f; rnObsH[i]=1+random(2); rnObsOn[i]=true; break; } }
-  // auto-jump when an obstacle approaches
-  if(!rnJumping) for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ float d=rnObsX[i]-RX; if(d>0.3f&&d<3.0f){ rnJumping=true; rnJumpV=0.017f; rnJumpH=0.01f; break; } }
+    for(int i=0;i<RUN_OBS;i++) if(!rnObsOn[i]){ rnObsX[i]=12.0f; rnObsType[i]=random(4); rnObsOn[i]=true; break; } }
+  // auto-jump when an obstacle approaches (jump higher to clear trees)
+  if(!rnJumping) for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ float d=rnObsX[i]-RX; if(d>0.3f&&d<3.4f){ rnJumping=true; rnJumpV=0.020f; rnJumpH=0.01f; break; } }
   if(rnJumping){ rnJumpH+=rnJumpV*dt; rnJumpV-=0.00005f*dt; if(rnJumpH<=0){ rnJumpH=0; rnJumpV=0; rnJumping=false; } }
   int F=GND-(int)(rnJumpH+0.5f);                // feet node (rises when jumping)
   bool f=((at/140)&1);                          // running leg frame
   CRGB col =CRGB(CHSV(35,180,235));             // runner
   CRGB gcol=CRGB(CHSV(95,200,110));             // ground
-  CRGB ocol=CRGB(CHSV(8,230,190));              // obstacle
   clearFrame();
   for(int c=0;c<11;c++) drawHSeg(GND,c,gcol);   // ground line
-  for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ int ox=(int)(rnObsX[i]+0.5f);
-    for(int h=0;h<rnObsH[i];h++) fillCell(GND-1-h,ox,ocol); }        // obstacles on the ground
+  for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]) rnDrawObstacle(rnObsType[i],(int)(rnObsX[i]+0.5f),GND);
   // ── runner ──
   int C=RX;
   fillCell(F-5,C-1,col); fillCell(F-5,C,col);   // head (2-cell box)
@@ -3277,7 +3311,84 @@ void anim_paddleBall(uint32_t at,float dt){
   FastLED.show();
 }
 
-#define TOTAL_ANIMS 57
+// ═══════════ 57. SMILEY (changing expressions) ═══════════
+// Face + mouth drawn as smooth arcs of thin strip segments (not boxy cells).
+// quad: 0=full circle, 1=lower arc (smile), 2=upper arc (frown).
+void smArc(float cy,float cx,float rad,CRGB col,int quad){
+  for(int R=0;R<=11;R++) for(int C=0;C<11;C++){
+    float dy=R-cy, dx=(C+0.5f)-cx, d=sqrtf(dy*dy+dx*dx);
+    if(fabsf(d-rad)<0.62f && (quad==0||(quad==1&&dy>0.1f)||(quad==2&&dy<-0.1f))) drawHSeg(R,C,col);
+  }
+  for(int R=0;R<11;R++) for(int C=0;C<=11;C++){
+    float dy=(R+0.5f)-cy, dx=C-cx, d=sqrtf(dy*dy+dx*dx);
+    if(fabsf(d-rad)<0.62f && (quad==0||(quad==1&&dy>0.1f)||(quad==2&&dy<-0.1f))) drawVSeg(R,C,col);
+  }
+}
+void anim_smiley(uint32_t at){
+  int expr=(int)((at/1600)%6);                  // switch expression every ~1.6s
+  CRGB face=CRGB(CHSV(45,235,200));
+  CRGB eye =CRGB(CHSV(150,220,230));
+  CRGB mth =CRGB(CHSV(0,230,230));
+  clearFrame();
+  smArc(5.5f,5.5f,4.3f,face,0);                 // smooth round face
+  // eyes
+  if(expr==3){ fillCell(3,3,eye); drawHSeg(3,6,eye); drawHSeg(3,7,eye); }  // wink
+  else { fillCell(3,3,eye); fillCell(3,7,eye);
+         if(expr==2){ fillCell(2,3,eye); fillCell(2,7,eye); } }            // surprised = wider
+  // mouth
+  switch(expr){
+    case 0: case 3: smArc(3.7f,5.5f,3.7f,mth,1); break;      // smile: bottom of a high circle
+    case 1: smArc(9.3f,5.5f,3.7f,mth,2); break;              // frown: top of a low circle
+    case 2: smArc(7.4f,5.5f,1.4f,mth,0); break;              // surprised: small round O
+    case 4: drawHSeg(8,4,mth); drawHSeg(8,5,mth); drawHSeg(8,6,mth); break; // neutral line
+    default: // angry: slanted brows + frown
+      drawHSeg(2,2,mth); drawVSeg(2,3,mth); drawHSeg(2,6,mth); drawVSeg(2,8,mth);
+      smArc(9.3f,5.5f,3.4f,mth,2); break;
+  }
+  FastLED.show();
+}
+
+// ═══════════ 58. EYE (looks around & blinks) ═══════════
+// Almond/horizontal-ellipse eye: lower lid fixed, upper lid sweeps down to
+// meet it (like a human blink). Lids share corners at (CY, CX±A).
+bool eyeInit=false;
+static float eyeGx,eyeGy,eyeTx,eyeTy; static uint32_t eyeMoveT,eyeBlinkT; static bool eyeBlk;
+// Smooth ellipse arc = a vertically-scaled circle, rendered by proximity so
+// it picks whichever H/V segments hug the curve (much rounder than a stair
+// march). half: 0=full, 1=lower half, 2=upper half.
+void drawEllipseArc(float cy,float cx,float a,float b,CRGB col,int half){
+  if(b<0.15f) b=0.15f;
+  float s=a/b;
+  for(int R=0;R<=11;R++) for(int C=0;C<11;C++){
+    float ry=R-cy, dy=ry*s, dx=(C+0.5f)-cx, d=sqrtf(dx*dx+dy*dy);
+    if(fabsf(d-a)<0.9f && (half==0||(half==1&&ry>-0.2f)||(half==2&&ry<0.2f))) drawHSeg(R,C,col);
+  }
+  for(int R=0;R<11;R++) for(int C=0;C<=11;C++){
+    float ry=(R+0.5f)-cy, dy=ry*s, dx=C-cx, d=sqrtf(dx*dx+dy*dy);
+    if(fabsf(d-a)<0.9f && (half==0||(half==1&&ry>-0.2f)||(half==2&&ry<0.2f))) drawVSeg(R,C,col);
+  }
+}
+void anim_eye(uint32_t at,float dt){
+  if(!eyeInit){ eyeGx=eyeGy=eyeTx=eyeTy=5.5f; eyeMoveT=at; eyeBlinkT=at; eyeBlk=false; eyeInit=true; }
+  if(at-eyeMoveT>1100){ eyeMoveT=at; eyeTx=3.6f+frand()*3.8f; eyeTy=4.9f+frand()*1.2f; }  // new gaze target
+  float k=dt*0.005f; if(k>1) k=1;
+  eyeGx+=(eyeTx-eyeGx)*k; eyeGy+=(eyeTy-eyeGy)*k;                     // smooth eye movement
+  if(!eyeBlk && at-eyeBlinkT>2800){ eyeBlk=true; eyeBlinkT=at; }
+  float bp=0; if(eyeBlk){ uint32_t e=at-eyeBlinkT; if(e>=280) eyeBlk=false; else bp=1.0f-fabsf((float)e-140.0f)/140.0f; }
+  const float CY=5.5f,CX=5.5f,A=4.8f,B=2.6f;   // horizontal ellipse (wide, short)
+  CRGB lid=CRGB(CHSV(0,0,220)), iris=CRGB(CHSV(140,230,225)), pup=CRGB(255,255,255);
+  clearFrame();
+  drawEllipseArc(CY,CX,A,B,lid,1);              // lower lid (fixed)
+  float Bu=B*(1.0f-2.0f*bp);                     // upper lid sweeps: top → centre → lower lid
+  if(Bu>=0) drawEllipseArc(CY,CX,A,Bu,lid,2); else drawEllipseArc(CY,CX,A,-Bu,lid,1);
+  if(bp<0.35f){                                  // eyeball hidden once the lid is most of the way down
+    smArc(eyeGy,eyeGx,1.2f,iris,0);              // iris follows gaze
+    smArc(eyeGy,eyeGx,0.6f,pup,0);               // pupil
+  }
+  FastLED.show();
+}
+
+#define TOTAL_ANIMS 59
 #define BRI_STEP         5
 #define STROBE_BRI_STEP  10
 #define STROBE_FREQ_STEP 2
@@ -3291,7 +3402,7 @@ void resetAnimState(uint32_t t) {
   nerveInit=false;starInit=false;pendInit=false;sqRainInit=false;golInit=false;
   evoInit=false;morphInit=false;wvInit=false;lorInit=false;hrInit=false;nfInit=false;plInit=false;
   tetInit=false;snakeInit=false;logoInit=false;stunInit=false;rripInit=false;boidInit=false;fwInit=false;rdInit=false;
-  stickInit=false;padInit=false;
+  stickInit=false;padInit=false;eyeInit=false;
   strikeTime=t;collideStrike=t;
   epiX=(random(80)-40);epiY=(random(80)-40);
   clearAll();delay(100);
@@ -3580,5 +3691,7 @@ void loop() {
     case 54: anim_text2026(at);            break;
     case 55: anim_stickman(at,dt);         break;
     case 56: anim_paddleBall(at,dt);       break;
+    case 57: anim_smiley(at);              break;
+    case 58: anim_eye(at,dt);              break;
   }
 }
