@@ -3003,46 +3003,47 @@ void anim_reactionDiff(uint32_t at,float dt){
 //  TEXT / FONT SYSTEM  (5x7 glyphs on the 11x11 cell canvas)
 //  Used by the banner modes and the mode-change overlay.
 // ═══════════════════════════════════════════════════════
-// FONT5x7[glyph][row], 5 bits/row (bit4 = leftmost column).
+// FONT3x5[glyph][row], 5 bits/row (bit4 = leftmost column), 3 rows tall.
+// Very short (3 cells → ~4 strip-lines) but still distinguishable.
 // glyph index: 0=space, 1..26 = A..Z, 27..36 = 0..9
-const uint8_t FONT5x7[37][7]={
-  {0,0,0,0,0,0,0},                                            // ' '
-  {0b00100,0b01010,0b10001,0b10001,0b11111,0b10001,0b10001},  // A
-  {0b11110,0b10001,0b10001,0b11110,0b10001,0b10001,0b11110},  // B
-  {0b01110,0b10001,0b10000,0b10000,0b10000,0b10001,0b01110},  // C
-  {0b11110,0b10001,0b10001,0b10001,0b10001,0b10001,0b11110},  // D
-  {0b11111,0b10000,0b10000,0b11110,0b10000,0b10000,0b11111},  // E
-  {0b11111,0b10000,0b10000,0b11110,0b10000,0b10000,0b10000},  // F
-  {0b01110,0b10001,0b10000,0b10111,0b10001,0b10001,0b01111},  // G
-  {0b10001,0b10001,0b10001,0b11111,0b10001,0b10001,0b10001},  // H
-  {0b11111,0b00100,0b00100,0b00100,0b00100,0b00100,0b11111},  // I
-  {0b00111,0b00010,0b00010,0b00010,0b00010,0b10010,0b01100},  // J
-  {0b10001,0b10010,0b10100,0b11000,0b10100,0b10010,0b10001},  // K
-  {0b10000,0b10000,0b10000,0b10000,0b10000,0b10000,0b11111},  // L
-  {0b10001,0b11011,0b10101,0b10101,0b10001,0b10001,0b10001},  // M
-  {0b10001,0b10001,0b11001,0b10101,0b10011,0b10001,0b10001},  // N
-  {0b01110,0b10001,0b10001,0b10001,0b10001,0b10001,0b01110},  // O
-  {0b11110,0b10001,0b10001,0b11110,0b10000,0b10000,0b10000},  // P
-  {0b01110,0b10001,0b10001,0b10001,0b10101,0b10010,0b01101},  // Q
-  {0b11110,0b10001,0b10001,0b11110,0b10100,0b10010,0b10001},  // R
-  {0b01111,0b10000,0b10000,0b01110,0b00001,0b00001,0b11110},  // S
-  {0b11111,0b00100,0b00100,0b00100,0b00100,0b00100,0b00100},  // T
-  {0b10001,0b10001,0b10001,0b10001,0b10001,0b10001,0b01110},  // U
-  {0b10001,0b10001,0b10001,0b10001,0b10001,0b01010,0b00100},  // V
-  {0b10001,0b10001,0b10001,0b10101,0b10101,0b11011,0b10001},  // W
-  {0b10001,0b10001,0b01010,0b00100,0b01010,0b10001,0b10001},  // X
-  {0b10001,0b10001,0b01010,0b00100,0b00100,0b00100,0b00100},  // Y
-  {0b11111,0b00001,0b00010,0b00100,0b01000,0b10000,0b11111},  // Z
-  {0b01110,0b10001,0b10011,0b10101,0b11001,0b10001,0b01110},  // 0
-  {0b00100,0b01100,0b00100,0b00100,0b00100,0b00100,0b01110},  // 1
-  {0b01110,0b10001,0b00001,0b00010,0b00100,0b01000,0b11111},  // 2
-  {0b11111,0b00010,0b00100,0b00010,0b00001,0b10001,0b01110},  // 3
-  {0b00010,0b00110,0b01010,0b10010,0b11111,0b00010,0b00010},  // 4
-  {0b11111,0b10000,0b11110,0b00001,0b00001,0b10001,0b01110},  // 5
-  {0b00110,0b01000,0b10000,0b11110,0b10001,0b10001,0b01110},  // 6
-  {0b11111,0b00001,0b00010,0b00100,0b01000,0b01000,0b01000},  // 7
-  {0b01110,0b10001,0b10001,0b01110,0b10001,0b10001,0b01110},  // 8
-  {0b01110,0b10001,0b10001,0b01111,0b00001,0b00010,0b01100}   // 9
+const uint8_t FONT3x5[37][3]={
+  {0,0,0},                       // ' '
+  {0b01110,0b11111,0b10001},     // A
+  {0b11110,0b11110,0b11111},     // B
+  {0b01111,0b10000,0b01111},     // C
+  {0b11110,0b10001,0b11110},     // D
+  {0b11111,0b11110,0b11111},     // E
+  {0b11111,0b11110,0b10000},     // F
+  {0b01110,0b10011,0b01111},     // G
+  {0b10001,0b11111,0b10001},     // H
+  {0b11111,0b00100,0b11111},     // I
+  {0b00111,0b00010,0b11110},     // J
+  {0b10010,0b11100,0b10010},     // K
+  {0b10000,0b10000,0b11111},     // L
+  {0b10001,0b11011,0b10101},     // M
+  {0b11001,0b10101,0b10011},     // N
+  {0b01110,0b10001,0b01110},     // O
+  {0b11110,0b11110,0b10000},     // P
+  {0b01110,0b10101,0b01111},     // Q
+  {0b11110,0b11110,0b10011},     // R
+  {0b01111,0b01110,0b11110},     // S
+  {0b11111,0b00100,0b00100},     // T
+  {0b10001,0b10001,0b01110},     // U
+  {0b10001,0b01010,0b00100},     // V
+  {0b10001,0b10101,0b01110},     // W
+  {0b10001,0b01110,0b10001},     // X
+  {0b10001,0b01110,0b00100},     // Y
+  {0b11111,0b00110,0b11111},     // Z
+  {0b11111,0b10001,0b11111},     // 0
+  {0b01100,0b00100,0b01110},     // 1
+  {0b11110,0b00100,0b01111},     // 2
+  {0b11110,0b01110,0b11110},     // 3
+  {0b10010,0b11111,0b00010},     // 4
+  {0b11111,0b11110,0b01111},     // 5
+  {0b11110,0b11111,0b01111},     // 6
+  {0b11111,0b00010,0b00100},     // 7
+  {0b11111,0b01110,0b11111},     // 8
+  {0b11111,0b01111,0b00011}      // 9
 };
 int glyphIndex(char c){
   if(c>='a'&&c<='z') c-=32;
@@ -3056,8 +3057,8 @@ void drawTextCells(const char* s,int xStart,int topRow,CRGB col){
   int x=xStart;
   for(const char* p=s;*p;p++){
     int gi=glyphIndex(*p);
-    for(int row=0;row<7;row++){
-      uint8_t bits=FONT5x7[gi][row];
+    for(int row=0;row<3;row++){
+      uint8_t bits=FONT3x5[gi][row];
       for(int c=0;c<5;c++) if(bits&(1<<(4-c))){ int cx=x+c; if(cx>=0&&cx<=10) fillCell(topRow+row,cx,col); }
     }
     x+=6;
@@ -3076,22 +3077,36 @@ const char* const ANIM_NAMES[]={
   "BOIDS","FIREWORKS","REACTION","TOGA","CASTLE","2026"
 };
 
-// ── Mode-change overlay: scrolls "<n> <NAME>" across the grid ──
+// ── Mode-change overlay: mode NUMBER held static & centered for a
+//    moment, then the NAME scrolls past slowly. Text is centred at
+//    row 3 (5-tall font → rows 3..7).
 uint32_t overlayUntil=0, overlayStart=0;
-char     overlayBuf[28];
+char     overlayNum[4];    // "40"
+char     overlayName[24];  // "REACTION"
+#define OVL_HOLD 1000      // ms the number stays fixed in the middle
+#define OVL_STEP 100       // ms per cell while the name scrolls (slow)
+#define TEXT_ROW 4         // top row for the 3-tall font (centres it: rows 4..6)
 void triggerOverlay(uint32_t t,int idx){
-  int n=idx+1; char* p=overlayBuf;
+  int n=idx+1; char* p=overlayNum;
   if(n>=10) *p++=(char)('0'+n/10);
-  *p++=(char)('0'+n%10); *p++=' ';
-  for(const char* s=ANIM_NAMES[idx]; *s && (p-overlayBuf)<26; ) *p++=*s++;
-  *p=0;
+  *p++=(char)('0'+n%10); *p=0;
+  char* q=overlayName;
+  for(const char* s=ANIM_NAMES[idx]; *s && (q-overlayName)<22; ) *q++=*s++;
+  *q=0;
   overlayStart=t;
-  overlayUntil=t+(uint32_t)((11+textPixelWidth(overlayBuf)+2)*60); // ~1 cell / 60ms
+  overlayUntil=t+OVL_HOLD+(uint32_t)((11+textPixelWidth(overlayName)+2)*OVL_STEP);
 }
 void renderOverlay(uint32_t t){
   clearFrame();
-  int x=11-(int)((t-overlayStart)/60);
-  drawTextCells(overlayBuf,x,2,CRGB(CHSV((uint8_t)(t/12),230,220)));
+  uint32_t el=t-overlayStart;
+  CRGB col=CRGB(CHSV((uint8_t)(t/16),230,220));
+  if(el<OVL_HOLD){
+    int w=textPixelWidth(overlayNum);
+    drawTextCells(overlayNum,(11-w)/2,TEXT_ROW,col);   // number fixed & centred
+  } else {
+    int x=11-(int)((el-OVL_HOLD)/OVL_STEP);             // name scrolls slowly
+    drawTextCells(overlayName,x,TEXT_ROW,col);
+  }
   FastLED.show();
 }
 
@@ -3114,8 +3129,8 @@ void anim_setupGrid(uint32_t t){
 void anim_scrollBanner(const char* s,uint32_t at,uint8_t baseHue){
   clearFrame();
   int span=textPixelWidth(s)+11+6;
-  int pos=(int)((at/80)%span);
-  drawTextCells(s,11-pos,2,CRGB(CHSV((uint8_t)(baseHue+at/40),255,220)));
+  int pos=(int)((at/150)%span);   // slower scroll
+  drawTextCells(s,11-pos,TEXT_ROW,CRGB(CHSV((uint8_t)(baseHue+at/60),255,220)));
   FastLED.show();
 }
 void anim_textTOGA(uint32_t at){   anim_scrollBanner("TOGA",  at, 40); }
