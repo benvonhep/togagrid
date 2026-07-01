@@ -674,5 +674,44 @@ PART 4 — RULES, CONSTRAINTS & NOTES FOR AI
     uint8_t receiverMAC[] = {0xF4,0x65,0x0B,0xE8,0x98,0x60};
 
 =============================================================
-END OF DOCUMENT (v2.0)
+APPENDIX A — ANIMATION PACK UPDATE (2026-07)
+=============================================================
+
+NOTE: Section 9's list of 62 names is HISTORICAL/aspirational.
+The firmware actually shipped 39 animations (cases 0..38).
+As of this update the real count is TOTAL_ANIMS = 51
+(cases 0..50), and this constant is kept in sync in BOTH
+grid_SW.ino AND Trellis_grid_sender_sw.ino (plus the
+animIndex constrain() bounds, now 0..50).
+
+12 new animations were added (cases 39..50). Several use an
+11x11 "cell canvas" — each cell is one grid square drawn via
+the new helper fillCell(row,col,colour) (rows/cols 0..10),
+which wraps drawGridSquare(). Figures/icons use drawIcon()
+with 11x11 bitmaps (ICON_HEART, ICON_SMILEY, ICON_STAR,
+ICON_ARROW, ICON_INVADER, ICON_NOTE).
+
+  39 tetris            falling tetrominoes, line clears
+  40 snake             self-playing snake seeking food
+  41 iconShow          cycles the icon bitmaps with fades
+  42 bouncingLogo      DVD-style bouncing 5x5 heart
+  43 starTunnel3D      stars streaming outward (depth)
+  44 rippleRain        drops emit expanding square rings
+  45 spiralGalaxy      rotating spiral arms + core glow
+  46 plasmaField       classic multi-sine plasma
+  47 breatheGradient   calm breathing colour gradient
+  48 boids             flocking dots on the lattice
+  49 fireworks         launch + gravity burst particles
+  50 reactionDiff      Gray-Scott reaction-diffusion spots
+
+New helpers in grid_SW.ino: fillCell(), clearFrame(),
+drawIcon(). New per-animation init flags reset in
+resetAnimState(): tetInit, snakeInit, logoInit, stunInit,
+rripInit, boidInit, fwInit, rdInit.
+
+Reach the new modes from the NeoTrellis with button 2
+(next) / button 6 (prev), same as before.
+
+=============================================================
+END OF DOCUMENT (v2.1)
 =============================================================
