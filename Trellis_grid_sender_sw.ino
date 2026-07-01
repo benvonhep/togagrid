@@ -1,214 +1,162 @@
 // ═══════════════════════════════════════════════════════
-//  NeoTrellis 4x4 Sender
-//  Col0=yellow/bri  Col1=pink/speed  Col2=orange/mode  Col3=special
-//   0 AnimBri+   1 AnimSpd+   2 NextMode   3 unused
-//   4 AnimBri-   5 AnimSpd-   6 PrevMode   7 unused
-//   8 StrobBri+  9 StrobFreq+ 10 StrobSq+  11 Blackout
-//  12 StrobBri- 13 StrobFreq- 14 StrobSq-  15 Strobe(hold)
+//  NeoTrellis 4x4 Sender — parameter-adjust interaction model
+//
+//  DEFAULT:  + (3) / − (7) change MODE.  0 = Modus indicator.
+//  Hold a param button 2s → ADJUST that param (it blinks, all others
+//    black except +/−; +/− then change only that param w/ accel).
+//  3s of no +/− activity → back to DEFAULT.
+//  Beat tap (11): tap-tempo → global animSpeed. Exits on 3s idle.
+//  Strobe (15): momentary while held.
+//
+//  Params:  4 Helligkeit · 8 Speed · 12 Color · 1 Strobe-colour · 5 Hue-speed
 // ═══════════════════════════════════════════════════════
-
 #include <Arduino.h>
 #include <esp_now.h>
 #include <WiFi.h>
 #include <Wire.h>
 #include "Adafruit_NeoTrellis.h"
-#include <Preferences.h>
 
-uint8_t receiverMAC[] = {0xF4, 0x65, 0x0B, 0xE8, 0x98, 0x60};
+uint8_t receiverMAC[] = {0xF4,0x65,0x0B,0xE8,0x98,0x60};
 Adafruit_NeoTrellis trellis;
 
-typedef struct {
-  uint16_t heldMask;
-  uint8_t  eventBtn;
-  bool     eventPressed;
-  bool     isEvent;
-} GridMsg;
+// ── Messages (must match grid_SW.ino) ──
+typedef struct { uint8_t cmd; uint8_t target; int16_t arg; bool strobe; bool modeStrobe; } GridMsg;
+typedef struct { uint8_t brightness,strobeBrightness,strobeOnMs,strobeOffMs,strobeSquares;
+                 uint8_t hueBase,hueSpeed,strobeHue;
+                 uint8_t tintR,tintG,tintB, sColR,sColG,sColB;
+                 int animIndex; float animSpeed; } SyncMsg;
 
-typedef struct {
-  uint8_t brightness;
-  uint8_t strobeBrightness;
-  uint8_t strobeOnMs;
-  uint8_t strobeOffMs;
-  uint8_t strobeSquares;
-  int     animIndex;
-  float   animSpeed;
-  bool    blackoutActive;
-} SyncMsg;
+#define HOLD_TO_SELECT     2000
+#define INACTIVITY_TIMEOUT 3000
 
-#define TOTAL_ANIMS      59
-#define BRI_STEP         5
-#define STROBE_BRI_STEP  10
-#define STROBE_FREQ_STEP 2
-#define STROBE_SQ_STEP   1
-#define REPEAT_DELAY     500
-#define REPEAT_RATE      80
+// ── Synced state from the grid (for at-limit display) ──
+struct { uint8_t brightness; float animSpeed; uint8_t hueBase,hueSpeed,strobeHue;
+         uint8_t tintR,tintG,tintB, sColR,sColG,sColB; } gs = {40,1.0f,0,0,0, 255,0,0, 200,200,200};
 
-struct SenderSettings {
-  int     animIndex;
-  uint8_t brightness;
-  uint8_t strobeBrightness;
-  uint8_t strobeOnMs;
-  uint8_t strobeOffMs;
-  uint8_t strobeSquares;
-  float   animSpeed;
-  bool    blackoutActive;
-} ss;
+// ── Button map ──
+// param button → target id (0=BRI 1=SPEED 2=COLOR 3=STROBEHUE 4=HUESPEED)
+int paramTarget(int b){ switch(b){case 4:return 0;case 8:return 1;case 12:return 2;case 1:return 3;case 5:return 4;} return -1; }
+bool isParamBtn(int b){ return paramTarget(b)>=0; }
 
-void loadSenderSettings() {
-  Preferences p; p.begin("grid",true);
-  ss.animIndex        = p.getInt("anim",0);
-  ss.brightness       = p.getUChar("bri",40);
-  ss.strobeBrightness = p.getUChar("sbri",200);
-  ss.strobeOnMs       = p.getUChar("son",40);
-  ss.strobeOffMs      = p.getUChar("soff",40);
-  ss.strobeSquares    = p.getUChar("ssq",30);
-  ss.animSpeed        = p.getFloat("spd",1.0f);
-  ss.blackoutActive   = false;
-  p.end();
-  ss.animIndex        = constrain(ss.animIndex,0,58);
-  ss.brightness       = constrain(ss.brightness,1,255);
-  ss.strobeBrightness = constrain(ss.strobeBrightness,1,255);
-  ss.strobeOnMs       = constrain(ss.strobeOnMs,5,200);
-  ss.strobeOffMs      = constrain(ss.strobeOffMs,5,200);
-  ss.strobeSquares    = constrain(ss.strobeSquares,1,122);
-  ss.animSpeed        = constrain(ss.animSpeed,0.1f,4.0f);
-}
+bool     btnDown[16]={}; uint32_t btnDownT[16]={};
 
-// ── Button state ──────────────────────────────────────
-uint16_t heldMask         = 0;
-bool     btnHeld[16]      = {};
-uint32_t btnPressTime[16] = {};
-uint32_t btnLastRepeat[16]= {};
+// ── Interaction state machine ──
+enum { ST_DEFAULT, ST_ADJUST, ST_TAP };
+int  state=ST_DEFAULT, activeBtn=-1, activeTarget=-1;
+int  suppressBtn=-1;                 // button that just deactivated a param (ignore its hold until released)
+uint32_t lastActivity=0;
+uint32_t plusPressT=0,minusPressT=0,plusRepT=0,minusRepT=0;
 
-// ── Limits ────────────────────────────────────────────
-bool atLimit(int btn) {
-  switch(btn){
-    case 0:  return ss.brightness>=255;
-    case 4:  return ss.brightness<=1;
-    case 1:  return ss.animSpeed>=4.0f;
-    case 5:  return ss.animSpeed<=0.1f;
-    case 8:  return ss.strobeBrightness>=255;
-    case 12: return ss.strobeBrightness<=1;
-    case 9:  return ss.strobeOnMs<=5;
-    case 13: return ss.strobeOnMs>=200;
-    case 10: return ss.strobeSquares>=122;
-    case 14: return ss.strobeSquares<=1;
-    default: return false;
-  }
-}
+#define MAX_TAPS 5
+uint32_t taps[MAX_TAPS]={}; int tapCount=0;
 
-// ── Colours ───────────────────────────────────────────
 uint32_t C(uint8_t r,uint8_t g,uint8_t b){ return trellis.pixels.Color(r,g,b); }
 
-uint32_t idleColour(int btn){
-  // At limit: show bright version
-  if(atLimit(btn)){
-    switch(btn){
-      case 0: case 4:   return C(220,220,0);
-      case 1: case 5:   return C(220,0,130);
-      case 8: case 12:  return C(220,220,0);
-      case 9: case 13:  return C(220,0,130);
-      case 10: case 14: return C(220,70,0);
-      default: break;
-    }
-  }
-  // Normal idle
-  switch(btn){
-    case 0: case 4: case 8: case 12: return C(25,25,0);   // yellow
-    case 1: case 5: case 9: case 13: return C(25,0,15);   // pink
-    case 2: case 6: case 10: case 14: return C(25,8,0);   // orange
-    case 11: return C(15,0,0);   // dim red
-    case 15: return C(80,80,80); // bright white
-    default: return C(0,0,0);    // unused off
-  }
-}
-
-uint32_t pressColour(int btn){
-  if(btn==15) return C(255,255,255);
-  if(btn==11) return C(255,0,0);
-  return C(60,0,0); // dim red press feedback
-}
-
-// ── ESP-NOW ───────────────────────────────────────────
+// ── ESP-NOW ──
 bool peerAdded=false;
-void ensurePeer(){
-  if(peerAdded) return;
-  esp_now_peer_info_t peer={};
-  memcpy(peer.peer_addr,receiverMAC,6);
-  peer.channel=0; peer.encrypt=false;
-  if(esp_now_add_peer(&peer)==ESP_OK) peerAdded=true;
+void ensurePeer(){ if(peerAdded)return; esp_now_peer_info_t p={}; memcpy(p.peer_addr,receiverMAC,6); p.channel=0;p.encrypt=false; if(esp_now_add_peer(&p)==ESP_OK)peerAdded=true; }
+void onSent(const uint8_t*mac,esp_now_send_status_t s){ if(s!=ESP_NOW_SEND_SUCCESS){ esp_now_del_peer(receiverMAC); peerAdded=false; } }
+void onReceive(const uint8_t*mac,const uint8_t*data,int len){
+  if(len!=sizeof(SyncMsg))return; SyncMsg m; memcpy(&m,data,sizeof(m));
+  gs.brightness=m.brightness; gs.animSpeed=m.animSpeed; gs.hueBase=m.hueBase; gs.hueSpeed=m.hueSpeed; gs.strobeHue=m.strobeHue;
+  gs.tintR=m.tintR; gs.tintG=m.tintG; gs.tintB=m.tintB; gs.sColR=m.sColR; gs.sColG=m.sColG; gs.sColB=m.sColB;
 }
-void onSent(const uint8_t* mac, esp_now_send_status_t s){
-  if(s!=ESP_NOW_SEND_SUCCESS){ esp_now_del_peer(receiverMAC); peerAdded=false; }
-}
-void sendMsg(bool isEvent, uint8_t btn, bool pressed){
-  ensurePeer();
-  GridMsg msg;
-  msg.heldMask=heldMask; msg.eventBtn=btn; msg.eventPressed=pressed; msg.isEvent=isEvent;
-  esp_now_send(receiverMAC,(uint8_t*)&msg,sizeof(msg));
-}
-void onReceive(const uint8_t* mac, const uint8_t* data, int len){
-  if(len!=sizeof(SyncMsg)) return;
-  SyncMsg sync;
-  memcpy(&sync,data,sizeof(sync));
-  ss.brightness       = sync.brightness;
-  ss.strobeBrightness = sync.strobeBrightness;
-  ss.strobeOnMs       = sync.strobeOnMs;
-  ss.strobeOffMs      = sync.strobeOffMs;
-  ss.strobeSquares    = sync.strobeSquares;
-  ss.animIndex        = sync.animIndex;
-  ss.animSpeed        = sync.animSpeed;
-  ss.blackoutActive   = sync.blackoutActive;
+void sendCmd(uint8_t cmd,uint8_t target,int16_t arg){
+  ensurePeer(); GridMsg m; m.cmd=cmd; m.target=target; m.arg=arg; m.strobe=btnDown[15]; m.modeStrobe=btnDown[14];
+  esp_now_send(receiverMAC,(uint8_t*)&m,sizeof(m));
 }
 
-// ── Actions ───────────────────────────────────────────
-void applyAction(uint8_t btn){
-  switch(btn){
-    case 0:  ss.brightness=(uint8_t)min((int)ss.brightness+BRI_STEP,255); break;
-    case 4:  ss.brightness=(uint8_t)max((int)ss.brightness-BRI_STEP,1);   break;
-    case 1:  ss.animSpeed=constrain(ss.animSpeed+0.1f,0.1f,4.0f);         break;
-    case 5:  ss.animSpeed=constrain(ss.animSpeed-0.1f,0.1f,4.0f);         break;
-    case 2:  ss.animIndex=(ss.animIndex+1)%TOTAL_ANIMS;                   break;
-    case 6:  ss.animIndex=(ss.animIndex-1+TOTAL_ANIMS)%TOTAL_ANIMS;       break;
-    case 8:  ss.strobeBrightness=(uint8_t)min((int)ss.strobeBrightness+STROBE_BRI_STEP,255); break;
-    case 12: ss.strobeBrightness=(uint8_t)max((int)ss.strobeBrightness-STROBE_BRI_STEP,1);   break;
-    case 9:  ss.strobeOnMs=(uint8_t)max((int)ss.strobeOnMs-STROBE_FREQ_STEP,5); ss.strobeOffMs=ss.strobeOnMs; break;
-    case 13: ss.strobeOnMs=(uint8_t)min((int)ss.strobeOnMs+STROBE_FREQ_STEP,200); ss.strobeOffMs=ss.strobeOnMs; break;
-    case 10: ss.strobeSquares=(uint8_t)min((int)ss.strobeSquares+STROBE_SQ_STEP,122); break;
-    case 14: ss.strobeSquares=(uint8_t)max((int)ss.strobeSquares-STROBE_SQ_STEP,1);   break;
-    case 11: ss.blackoutActive=!ss.blackoutActive;                         break;
-  }
-}
+void enterDefault(){ state=ST_DEFAULT; activeBtn=-1; activeTarget=-1; tapCount=0; }
+void enterAdjust(int b){ state=ST_ADJUST; activeBtn=b; activeTarget=paramTarget(b); lastActivity=millis(); }
+void enterTap(){ state=ST_TAP; tapCount=0; lastActivity=millis(); }
 
-// ── NeoTrellis callback ───────────────────────────────
+// ── Trellis key callback ──
 TrellisCallback handleKey(keyEvent evt){
-  uint8_t btn=evt.bit.NUM;
-  bool pressed=(evt.bit.EDGE==SEESAW_KEYPAD_EDGE_RISING);
-  btnHeld[btn]=pressed;
+  uint8_t b=evt.bit.NUM; bool pressed=(evt.bit.EDGE==SEESAW_KEYPAD_EDGE_RISING);
+  btnDown[b]=pressed; if(pressed) btnDownT[b]=millis();
   if(pressed){
-    heldMask|=(1<<btn);
-    btnPressTime[btn]=millis();
-    btnLastRepeat[btn]=millis();
-    applyAction(btn);
-  } else {
-    heldMask&=~(1<<btn);
-  }
-  sendMsg(true,btn,pressed);
+    if(isParamBtn(b) && state==ST_ADJUST && activeBtn==b){ enterDefault(); suppressBtn=b; } // tap active param → off
+  } else if(b==suppressBtn) suppressBtn=-1;       // released → hold-to-activate allowed again
+  if(b==15||b==14) sendCmd(0,0,0);               // strobe / mode-strobe edge → notify immediately
   return 0;
 }
 
-// ─────────────────────────────────────────────────────
+// true if the active param is at its limit in direction dir
+bool atLimit(int dir){
+  switch(activeTarget){
+    case 0: return dir>0? gs.brightness>=128 : gs.brightness<=1;
+    case 1: return dir>0? gs.animSpeed>=4.0f : gs.animSpeed<=0.1f;
+    case 4: return dir>0? gs.hueSpeed>=40    : gs.hueSpeed<=0;
+    default: return false;                       // COLOR / STROBEHUE wrap
+  }
+}
+
+// HSV → trellis colour (h,s,v all 0..255).
+uint32_t hsvC(uint8_t h,uint8_t s,uint8_t v){
+  uint8_t region=h/43, rem=(uint8_t)((h-region*43)*6);
+  uint8_t p=(uint8_t)((v*(255-s))/255), q=(uint8_t)((v*(255-((s*rem)/255)))/255), tt=(uint8_t)((v*(255-((s*(255-rem))/255)))/255);
+  uint8_t r,g,b;
+  switch(region){case 0:r=v;g=tt;b=p;break;case 1:r=q;g=v;b=p;break;case 2:r=p;g=v;b=tt;break;
+                 case 3:r=p;g=q;b=v;break;case 4:r=tt;g=p;b=v;break;default:r=v;g=p;b=q;break;}
+  return C(r,g,b);
+}
+// Cold→hot meter colour for a 0..1 fraction (blue=low, red=high).
+uint32_t heatCol(float frac,uint8_t v){ if(frac<0)frac=0; if(frac>1)frac=1; return hsvC((uint8_t)(170.0f*(1.0f-frac)),255,v); }
+// Scale an RGB triple to brightness v.
+uint32_t rgbScale(uint8_t r,uint8_t g,uint8_t b,uint8_t v){ return C((uint8_t)((uint16_t)r*v/255),(uint8_t)((uint16_t)g*v/255),(uint8_t)((uint16_t)b*v/255)); }
+// Actual strobe colour as reported by the grid.
+uint32_t strobeCol(uint8_t v){ return rgbScale(gs.sColR,gs.sColG,gs.sColB,v); }
+// Param button colour: value params show a cold→hot meter; colour params show
+// the actual colour they are set to.
+uint32_t paramCol(int b,uint8_t v){
+  float f;
+  switch(b){
+    case 4:  f=(gs.brightness-1)/127.0f; break;      // Helligkeit 1..128
+    case 8:  f=(gs.animSpeed-0.1f)/3.9f; break;       // Speed 0.1..4.0
+    case 5:  f=gs.hueSpeed/40.0f; break;              // Hue-speed 0..40
+    case 12: return rgbScale(gs.tintR,gs.tintG,gs.tintB,v);  // Color → exact grid tint
+    case 1:  return strobeCol(v);                            // Strobe-colour → actual strobe colour
+    default: return C(v,v,v);
+  }
+  return heatCol(f,v);
+}
+void renderLEDs(uint32_t t){
+  bool blink=((t/125)%2)==0;                      // ~4 Hz
+  for(int i=0;i<16;i++){
+    uint32_t col=C(0,0,0);
+    if(state==ST_ADJUST){
+      if(i==activeBtn)      col=blink?paramCol(i,170):paramCol(i,22);  // flash in its own colour
+      else if(i==3||i==7)   col=C(0,60,80);
+      else if(i==15 && activeTarget==3) col=strobeCol(90);   // live strobe-colour preview
+    } else if(state==ST_TAP){
+      if(i==11)             col=blink?C(160,0,0):C(15,0,0);
+    } else { // DEFAULT (+/- select the mode when no param is active)
+      if(i==3||i==7)        col=C(0,60,80);        // +/-
+      else if(isParamBtn(i)) col=paramCol(i,32);   // each param in its own colour
+      else if(i==11)        col=C(40,0,0);         // Beat tap
+      else if(i==14)        col=C(45,20,45);       // Mode-strobe
+      else if(i==15)        col=strobeCol(70);     // Strobe shows its set colour
+    }
+    // press feedback
+    if(btnDown[i]){
+      if(i==15)                     col=strobeCol(255);
+      else if(i==14)                col=rgbScale(gs.tintR,gs.tintG,gs.tintB,255);  // mode-strobe flash colour
+      else if(!(state==ST_ADJUST && i==activeBtn)) col=C(70,20,0);
+    }
+    trellis.pixels.setPixelColor(i,col);
+  }
+  trellis.pixels.show();
+}
+
 void setup(){
   Wire.begin();
-  if(!trellis.begin()){ while(1) delay(1000); } // halt if trellis not found
+  if(!trellis.begin()){ while(1) delay(1000); }
   for(int i=0;i<16;i++){
     trellis.activateKey(i,SEESAW_KEYPAD_EDGE_RISING);
     trellis.activateKey(i,SEESAW_KEYPAD_EDGE_FALLING);
     trellis.registerCallback(i,handleKey);
   }
-  loadSenderSettings();
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
+  WiFi.mode(WIFI_STA); WiFi.disconnect();
   if(esp_now_init()!=ESP_OK){ while(1) delay(1000); }
   esp_now_register_send_cb(onSent);
   esp_now_register_recv_cb(onReceive);
@@ -216,46 +164,55 @@ void setup(){
 }
 
 void loop(){
-  static uint32_t lastHB=0, lastTrellis=0;
+  static uint32_t lastPoll=0,lastHB=0;
+  static bool prevTap=false, prevPlus=false, prevMinus=false;
   uint32_t t=millis();
 
-  // ── Poll + render all pixels every 20ms ──────────
-  if(t-lastTrellis>=20){
-    lastTrellis=t;
-    trellis.read();  // poll keys; may internally overwrite pixels
+  if(t-lastHB>=100){ lastHB=t; sendCmd(0,0,0); }   // heartbeat (carries strobe state)
 
-    bool blink=((t/167)%2)==0;  // ~6Hz blink
+  if(t-lastPoll<20) return;
+  lastPoll=t;
+  trellis.read();                                  // fires handleKey
 
-    for(int i=0;i<16;i++){
-      uint32_t col;
-      if(btnHeld[i]){
-        if(atLimit(i))
-          col=blink?C(255,0,0):C(25,0,0);  // blink at limit
-        else
-          col=pressColour(i);
-      } else if(i==11 && ss.blackoutActive){
-        col=blink?C(180,0,0):C(20,0,0);    // blink blackout
-      } else {
-        col=idleColour(i);
-      }
-      trellis.pixels.setPixelColor(i,col);
-    }
-    trellis.pixels.show();
+  // ── Hold a param button 2s → activate ADJUST (it starts blinking) ──
+  const int pbs[5]={4,8,12,1,5};
+  for(int k=0;k<5;k++){ int b=pbs[k];
+    if(b==suppressBtn) continue;                 // don't re-arm the button we just tapped off
+    if(btnDown[b] && (t-btnDownT[b])>=HOLD_TO_SELECT && !(state==ST_ADJUST && activeBtn==b)) enterAdjust(b);
   }
 
-  // ── Hold-to-repeat with acceleration ─────────────
-  for(int i=0;i<16;i++){
-    if(!btnHeld[i]||i==15||i==11||i==2||i==6) continue;
-    uint32_t held=t-btnPressTime[i];
-    if(held<REPEAT_DELAY) continue;
-    uint32_t rate=held<2000?REPEAT_RATE:held<4000?REPEAT_RATE/2:REPEAT_RATE/5;
-    if(t-btnLastRepeat[i]>=rate){
-      btnLastRepeat[i]=t;
-      applyAction(i);
-      sendMsg(true,i,true);
+  // ── Beat matcher: hold 11 for 3s to arm, then tap the beat ──
+  if(btnDown[11] && (t-btnDownT[11])>=3000 && state!=ST_TAP){ enterTap(); lastActivity=t; }
+  if(state==ST_TAP && btnDown[11] && !prevTap){        // a fresh tap (the arming hold isn't counted)
+    if(tapCount<MAX_TAPS) taps[tapCount++]=t;
+    else { for(int i=1;i<MAX_TAPS;i++) taps[i-1]=taps[i]; taps[MAX_TAPS-1]=t; }
+    lastActivity=t;
+    if(tapCount>=2){
+      uint32_t sum=0; for(int i=1;i<tapCount;i++) sum+=taps[i]-taps[i-1];
+      float avg=(float)sum/(tapCount-1);              // ms per beat
+      float sp=(60000.0f/avg)/120.0f;                 // 120 BPM = speed 1.0
+      if(sp<0.1f)sp=0.1f; if(sp>4.0f)sp=4.0f;
+      sendCmd(3,0,(int16_t)(sp*1000));                // store tempo (persists; final one stays after 3s idle)
     }
   }
+  prevTap=btnDown[11];
 
-  // ── Heartbeat every 100ms ─────────────────────────
-  if(t-lastHB>=100){ lastHB=t; sendMsg(false,0,false); }
+  // ── +/- ──
+  bool plus=btnDown[3], minus=btnDown[7];
+  if(state==ST_DEFAULT){
+    if(plus  && !prevPlus)  sendCmd(1,0,+1);        // next mode
+    if(minus && !prevMinus) sendCmd(1,0,-1);        // prev mode
+  } else if(state==ST_ADJUST){
+    if(plus && !prevPlus){ plusPressT=t; plusRepT=t; sendCmd(2,activeTarget,+1); lastActivity=t; }
+    else if(plus){ uint32_t h=t-plusPressT; if(h>=500){ uint32_t rate=h<2000?80:(h<4000?40:16); if(t-plusRepT>=rate){ plusRepT=t; sendCmd(2,activeTarget,+1); lastActivity=t; } } }
+    if(minus && !prevMinus){ minusPressT=t; minusRepT=t; sendCmd(2,activeTarget,-1); lastActivity=t; }
+    else if(minus){ uint32_t h=t-minusPressT; if(h>=500){ uint32_t rate=h<2000?80:(h<4000?40:16); if(t-minusRepT>=rate){ minusRepT=t; sendCmd(2,activeTarget,-1); lastActivity=t; } } }
+  }
+  prevPlus=plus; prevMinus=minus;
+
+  // ADJUST stays until the active param button is tapped again (no timeout).
+  // The beat matcher exits (storing the tempo) after 3s of no taps.
+  if(state==ST_TAP && (t-lastActivity)>INACTIVITY_TIMEOUT) enterDefault();
+
+  renderLEDs(t);
 }
