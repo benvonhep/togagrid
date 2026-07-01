@@ -753,5 +753,55 @@ MODE-CHANGE OVERLAY:
   the dispatch switch in the same order.
 
 =============================================================
-END OF DOCUMENT (v2.2)
+APPENDIX C — BUILD / FLASH NOTES (arduino-cli)
+=============================================================
+
+Verified working flash on 2026-07 (LED grid, MAC
+f4:65:0b:e8:98:60, ESP32-D0WD-V3, port /dev/cu.usbserial-0001).
+
+CORE VERSION:
+  Use arduino-esp32 core 2.0.x (tested 2.0.17). The ESP-NOW
+  receive callbacks use the 2.x signature
+    void onReceive(const uint8_t* mac, const uint8_t* data,int)
+  which does NOT compile on core 3.x (3.x expects
+  const esp_now_recv_info_t*). Stay on 2.0.x, or update both
+  callbacks (grid + trellis) if moving to 3.x.
+
+PARTITION SCHEME — IMPORTANT:
+  grid_SW.ino is ~1.30 MB and OVERFLOWS the default partition
+  (app slot 0x140000 = 1.31 MB) once padded/hashed → silent
+  boot loop (rst:0x3 SW_RESET, no serial output). Flash with a
+  larger app partition:
+
+    arduino-cli compile \
+      --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
+      --upload -p /dev/cu.usbserial-0001 <sketchdir>
+
+  huge_app gives a 3 MB app slot and keeps NVS at 0x9000
+  (settings preserved). The Arduino IDE equivalent is
+  Tools > Partition Scheme > "Huge APP (3MB No OTA/1MB SPIFFS)".
+
+  Each sketch must sit in a folder of the same name
+  (grid_SW/grid_SW.ino); the two sketches cannot share one
+  folder (duplicate setup()/loop()).
+
+FastLED VERSION — IMPORTANT:
+  Use FastLED 3.6.0:
+    arduino-cli lib install FastLED@3.6.0
+  FastLED 3.10.x on ESP32 core 2.0.x falls back to a GENERIC
+  bit-bang clockless driver (serial warning "Using GENERIC
+  fallback clockless controller"). That driver disables
+  interrupts during every LED show(), which STARVES the WiFi
+  stack and breaks ESP-NOW → the NeoTrellis controller stops
+  changing mode/brightness. 3.10.x is also ~480KB larger,
+  overflowing the default partition. 3.6.0 uses the RMT
+  hardware driver (interrupts stay on) and is compact (~826KB
+  total, fits even the default partition).
+
+BRIGHTNESS CAP:
+  grid_SW.ino caps animation brightness at MAX_BRIGHTNESS=128
+  (~50%). Raise/lower this #define to change the ceiling.
+
+=============================================================
+END OF DOCUMENT (v2.4)
 =============================================================

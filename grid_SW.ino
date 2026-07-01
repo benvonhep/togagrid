@@ -6,6 +6,7 @@
 #define LEDS_PER_STRIP 258
 #define NUM_ELEC        6
 #define BRIGHTNESS     40
+#define MAX_BRIGHTNESS 128   // cap grid max brightness at ~50% (white/yellow etc)
 #define ANIM_DURATION  10000
 
 CRGB ledsX[NUM_ELEC][LEDS_PER_STRIP];
@@ -2567,7 +2568,7 @@ void loadSettings() {
   cfg.animSpeed        = prefs.getFloat("spd",  1.0f);
   prefs.end();
   cfg.animIndex        = constrain(cfg.animIndex, 0, 54);
-  cfg.brightness       = constrain(cfg.brightness, 1, 255);
+  cfg.brightness       = constrain(cfg.brightness, 1, MAX_BRIGHTNESS);
   cfg.strobeBrightness = constrain(cfg.strobeBrightness, 1, 255);
   cfg.strobeOnMs       = constrain(cfg.strobeOnMs, 5, 200);
   cfg.strobeOffMs      = constrain(cfg.strobeOffMs, 5, 200);
@@ -3260,7 +3261,7 @@ void loop() {
     if(heldFor>0 && t-recvLastRepeat[i]<rate) continue;
     recvLastRepeat[i]=t;
     switch(i){
-      case 0:  cfg.brightness=(uint8_t)min((int)cfg.brightness+BRI_STEP,255);if(!strobeActive&&!blackoutActive)FastLED.setBrightness(cfg.brightness);saveSettings();break;
+      case 0:  cfg.brightness=(uint8_t)min((int)cfg.brightness+BRI_STEP,MAX_BRIGHTNESS);if(!strobeActive&&!blackoutActive)FastLED.setBrightness(cfg.brightness);saveSettings();break;
       case 4:  cfg.brightness=(uint8_t)max((int)cfg.brightness-BRI_STEP,1);if(!strobeActive&&!blackoutActive)FastLED.setBrightness(cfg.brightness);saveSettings();break;
       case 1:  cfg.animSpeed=constrain(cfg.animSpeed+0.1f,0.1f,4.0f);saveSettings();Serial.printf("  Spd→%.2f\n",cfg.animSpeed);break;
       case 5:  cfg.animSpeed=constrain(cfg.animSpeed-0.1f,0.1f,4.0f);saveSettings();Serial.printf("  Spd→%.2f\n",cfg.animSpeed);break;
