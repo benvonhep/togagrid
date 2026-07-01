@@ -9,6 +9,23 @@
 #define MAX_BRIGHTNESS 128   // cap grid max brightness at ~50% (white/yellow etc)
 #define ANIM_DURATION  10000
 
+// ── ESP-NOW messages (defined early so function prototypes see them) ──
+typedef struct {
+  uint8_t cmd;      // 0=heartbeat, 1=mode step, 2=param step, 3=set speed
+  uint8_t target;   // param id for cmd==2: 0=BRI 1=SPEED 2=COLOR 3=STROBEHUE 4=HUESPEED
+  int16_t arg;      // mode/param: +1 / -1 ; set-speed: animSpeed*1000
+  bool    strobe;   // momentary strobe held (white/colour squares)
+  bool    modeStrobe; // momentary: strobe the current animation on/off
+} GridMsg;
+typedef struct {
+  uint8_t brightness, strobeBrightness, strobeOnMs, strobeOffMs, strobeSquares;
+  uint8_t hueBase, hueSpeed, strobeHue;
+  uint8_t tintR, tintG, tintB;      // exact current global-tint colour
+  uint8_t sColR, sColG, sColB;      // exact current strobe colour
+  int     animIndex;
+  float   animSpeed;
+} SyncMsg;
+
 CRGB ledsX[NUM_ELEC][LEDS_PER_STRIP];
 CRGB ledsY[NUM_ELEC][LEDS_PER_STRIP];
 
@@ -31,6 +48,20 @@ void clearAll() {
   FastLED.show();
 }
 
+// ── Global colour controls (Color knob + auto Hue-speed) ──
+uint8_t gHueBase=0, gHueAuto=0, gHueSpeed=0, gStrobeHue=0;
+// Central show: rotates every lit pixel's hue by (base+auto) then pushes to LEDs.
+void showGrid(){
+  uint8_t off=(uint8_t)(gHueBase+gHueAuto);
+  if(off){
+    for(int e=0;e<NUM_ELEC;e++) for(int i=0;i<LEDS_PER_STRIP;i++){
+      CRGB* p=&ledsX[e][i]; if(p->r|p->g|p->b){ CHSV h=rgb2hsv_approximate(*p); h.hue+=off; *p=h; }
+      p=&ledsY[e][i];       if(p->r|p->g|p->b){ CHSV h=rgb2hsv_approximate(*p); h.hue+=off; *p=h; }
+    }
+  }
+  FastLED.show();
+}
+
 // ══════════════════════════════════════════════
 // ORIGINAL ANIMATIONS (minus 4, 6, 15)
 // ══════════════════════════════════════════════
@@ -42,7 +73,7 @@ void anim_heartbeat(uint32_t t) {
   float p2=(cycle>200&&cycle<800)?(cycle-200)*speed:0.0f;
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float dist=sqrtf(x*x+y*y)/MAX_DIST;float bri=0.0f;float d1=fabsf(dist-p1);if(d1<0.06f)bri+=(1.0f-d1/0.06f)*(1.0f-p1);float d2=fabsf(dist-p2);if(d2<0.06f)bri+=(1.0f-d2/0.06f)*(1.0f-p2)*0.7f;bri=constrain(bri,0.0f,1.0f);uint8_t b=(uint8_t)(bri*255.0f);uint8_t sat=(uint8_t)(255.0f-bri*180.0f);setLED(true,xi+1,n,CRGB(CHSV(0,sat,b)));}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float dist=sqrtf(x*x+y*y)/MAX_DIST;float bri=0.0f;float d1=fabsf(dist-p1);if(d1<0.06f)bri+=(1.0f-d1/0.06f)*(1.0f-p1);float d2=fabsf(dist-p2);if(d2<0.06f)bri+=(1.0f-d2/0.06f)*(1.0f-p2)*0.7f;bri=constrain(bri,0.0f,1.0f);uint8_t b=(uint8_t)(bri*255.0f);uint8_t sat=(uint8_t)(255.0f-bri*180.0f);setLED(false,yi+1,n,CRGB(CHSV(0,sat,b)));}}
-  FastLED.show();
+  showGrid();
 }
 
 // 2. BINARY RAIN
@@ -51,7 +82,7 @@ void anim_binaryRain(uint32_t t,float dt) {
   if(!rainInit){for(int i=0;i<12;i++){rainPos[i]=random(121);rainSpeed[i]=0.03f+random(70)*0.001f;rainLen[i]=15+random(30);}rainInit=true;}
   for(int xi=0;xi<12;xi++){rainPos[xi]+=rainSpeed[xi]*dt;if(rainPos[xi]>121.0f+rainLen[xi])rainPos[xi]=-rainLen[xi];for(int n=1;n<=121;n++){float trail=rainPos[xi]-n;uint8_t b=0;if(trail>0&&trail<rainLen[xi]){float fade=1.0f-(trail/rainLen[xi]);b=(trail<2.0f)?255:(uint8_t)(fade*fade*180.0f);if(random(20)==0)b=min((int)b+60,255);}uint8_t hue=96+(n%3)*5;setLED(true,xi+1,n,b>0?CRGB(CHSV(hue,220,b)):CRGB::Black);}}
   for(int yi=0;yi<12;yi++){for(int n=1;n<=121;n++){uint8_t b=(random(100)<3)?random(30):0;setLED(false,yi+1,n,b>0?CRGB(CHSV(96,220,b)):CRGB::Black);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 3. TECTONIC PLATES
@@ -59,7 +90,7 @@ void anim_tectonic(uint32_t t) {
   float fX=CENTER+sinf(t*0.0003f)*20.0f;float fY=CENTER+cosf(t*0.0002f)*20.0f;float fw=4.0f+sinf(t*0.0007f)*2.0f;
   for(int xi=0;xi<12;xi++){float sp=X_POS[xi]+CENTER;for(int n=1;n<=121;n++){float dX=fabsf((float)n-fY);float dY=fabsf(sp-fX);float fb=0.0f;if(dX<fw)fb=max(fb,1.0f-dX/fw);if(dY<fw)fb=max(fb,1.0f-dY/fw);float rumble=sinf(t*0.001f+xi*0.7f+n*0.05f)*0.5f+0.5f;uint8_t pb=(uint8_t)(rumble*25.0f);if(fb>0.01f){uint8_t b=(uint8_t)(fb*255.0f);uint8_t sat=(uint8_t)(200.0f-fb*200.0f);setLED(true,xi+1,n,CRGB(CHSV(20,sat,b)));}else setLED(true,xi+1,n,CRGB(pb,pb,pb));}}
   for(int yi=0;yi<12;yi++){float sp=Y_POS[yi]+CENTER;for(int n=1;n<=121;n++){float dX=fabsf((float)n-fX);float dY=fabsf(sp-fY);float fb=0.0f;if(dX<fw)fb=max(fb,1.0f-dX/fw);if(dY<fw)fb=max(fb,1.0f-dY/fw);float rumble=sinf(t*0.001f+yi*0.9f+n*0.05f)*0.5f+0.5f;uint8_t pb=(uint8_t)(rumble*25.0f);if(fb>0.01f){uint8_t b=(uint8_t)(fb*255.0f);uint8_t sat=(uint8_t)(200.0f-fb*200.0f);setLED(false,yi+1,n,CRGB(CHSV(20,sat,b)));}else setLED(false,yi+1,n,CRGB(pb,pb,pb));}}
-  FastLED.show();
+  showGrid();
 }
 
 // 4. VORTEX SPIRAL (the fan favourite)
@@ -67,7 +98,7 @@ void anim_vortex(uint32_t t) {
   float tf=t*0.001f;float tight=0.15f+sinf(tf*0.3f)*0.08f;
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float dist=sqrtf(x*x+y*y);float angle=atan2f(y,x);float sp=fmod(angle*3.0f/(2.0f*M_PI)-dist*tight-tf*0.5f,1.0f);if(sp<0.0f)sp+=1.0f;float bri=powf(sinf(sp*M_PI),2.5f)*sinf(constrain(dist/MAX_DIST,0.0f,1.0f)*M_PI);uint8_t b=(uint8_t)(bri*220.0f);uint8_t hue=(uint8_t)((int)(180.0f+dist*0.8f+tf*20.0f)%255);setLED(true,xi+1,n,b>2?CRGB(CHSV(hue,220,b)):CRGB::Black);}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float dist=sqrtf(x*x+y*y);float angle=atan2f(y,x);float sp=fmod(angle*3.0f/(2.0f*M_PI)-dist*tight-tf*0.5f,1.0f);if(sp<0.0f)sp+=1.0f;float bri=powf(sinf(sp*M_PI),2.5f)*sinf(constrain(dist/MAX_DIST,0.0f,1.0f)*M_PI);uint8_t b=(uint8_t)(bri*220.0f);uint8_t hue=(uint8_t)((int)(180.0f+dist*0.8f+tf*20.0f)%255);setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,220,b)):CRGB::Black);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 5. EARTHQUAKE
@@ -77,7 +108,7 @@ void anim_earthquake(uint32_t t) {
   float elapsed=(t-strikeTime)*0.001f;float wp=elapsed*30.0f;float decay=expf(-elapsed*0.8f);
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float dist=sqrtf((x-epiX)*(x-epiX)+(y-epiY)*(y-epiY));float w=max(sinf((dist-wp)*0.3f)*decay,0.0f)+max(sinf((dist-wp*0.6f)*0.2f)*decay*0.4f,0.0f);float total=constrain(w,0.0f,1.0f);uint8_t b=(uint8_t)(total*230.0f);uint8_t sat=(uint8_t)(200.0f-total*100.0f);setLED(true,xi+1,n,b>3?CRGB(CHSV(25,sat,b)):CRGB::Black);}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float dist=sqrtf((x-epiX)*(x-epiX)+(y-epiY)*(y-epiY));float w=max(sinf((dist-wp)*0.3f)*decay,0.0f)+max(sinf((dist-wp*0.6f)*0.2f)*decay*0.4f,0.0f);float total=constrain(w,0.0f,1.0f);uint8_t b=(uint8_t)(total*230.0f);uint8_t sat=(uint8_t)(200.0f-total*100.0f);setLED(false,yi+1,n,b>3?CRGB(CHSV(25,sat,b)):CRGB::Black);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 6. DNA HELIX
@@ -85,7 +116,7 @@ void anim_dnaHelix(uint32_t t) {
   float tf=t*0.001f;
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float w=8.0f+sinf(tf*0.7f)*3.0f;float s1y=sinf(x*0.12f-tf*2.0f)*40.0f;float s2y=sinf(x*0.12f+tf*2.0f+M_PI)*40.0f;float b1=fabsf(y-s1y)<w?powf(1.0f-fabsf(y-s1y)/w,2.0f):0.0f;float b2=fabsf(y-s2y)<w?powf(1.0f-fabsf(y-s2y)/w,2.0f):0.0f;CRGB c=CRGB::Black;if(b1>0){CRGB s=CRGB(CHSV(130,240,(uint8_t)(b1*220.0f)));c.r=qadd8(c.r,s.r);c.g=qadd8(c.g,s.g);c.b=qadd8(c.b,s.b);}if(b2>0){CRGB s=CRGB(CHSV(300,240,(uint8_t)(b2*220.0f)));c.r=qadd8(c.r,s.r);c.g=qadd8(c.g,s.g);c.b=qadd8(c.b,s.b);}setLED(true,xi+1,n,c);}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float w=8.0f+sinf(tf*0.7f)*3.0f;float s1x=sinf(y*0.12f-tf*2.0f)*40.0f;float s2x=sinf(y*0.12f+tf*2.0f+M_PI)*40.0f;float b1=fabsf(x-s1x)<w?powf(1.0f-fabsf(x-s1x)/w,2.0f):0.0f;float b2=fabsf(x-s2x)<w?powf(1.0f-fabsf(x-s2x)/w,2.0f):0.0f;CRGB c=CRGB::Black;if(b1>0){CRGB s=CRGB(CHSV(130,240,(uint8_t)(b1*220.0f)));c.r=qadd8(c.r,s.r);c.g=qadd8(c.g,s.g);c.b=qadd8(c.b,s.b);}if(b2>0){CRGB s=CRGB(CHSV(300,240,(uint8_t)(b2*220.0f)));c.r=qadd8(c.r,s.r);c.g=qadd8(c.g,s.g);c.b=qadd8(c.b,s.b);}setLED(false,yi+1,n,c);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 7. SUPERNOVA
@@ -97,7 +128,7 @@ void anim_supernova(uint32_t at) {
   float elapsed=(t-novaStrike)*0.001f;float shockwave=elapsed*55.0f;float coreBri=max(0.0f,1.0f-elapsed*0.8f);
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float dist=sqrtf(x*x+y*y);float sw=fabsf(dist-shockwave);float swBri=(sw<5.0f)?(1.0f-sw/5.0f)*max(0.0f,1.0f-elapsed*0.3f):0.0f;float cBri=coreBri*expf(-dist*0.04f);float spBri=0.0f;float angle=atan2f(y,x);for(int i=0;i<20;i++){float sd=fabsf(dist-sparkSpeed[i]*elapsed*MAX_DIST);float sa=fabsf(angle-sparkAngle[i]);if(sa>M_PI)sa=2.0f*M_PI-sa;if(sd<3.0f&&sa<0.15f)spBri=max(spBri,(1.0f-sd/3.0f)*max(0.0f,1.0f-elapsed*0.4f));}float total=constrain(swBri+cBri+spBri,0.0f,1.0f);uint8_t b=(uint8_t)(total*255.0f);uint8_t hue=(uint8_t)(swBri>cBri?20:0);uint8_t sat=(uint8_t)(200.0f-cBri*200.0f);setLED(true,xi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float dist=sqrtf(x*x+y*y);float sw=fabsf(dist-shockwave);float swBri=(sw<5.0f)?(1.0f-sw/5.0f)*max(0.0f,1.0f-elapsed*0.3f):0.0f;float cBri=coreBri*expf(-dist*0.04f);float spBri=0.0f;float angle=atan2f(y,x);for(int i=0;i<20;i++){float sd=fabsf(dist-sparkSpeed[i]*elapsed*MAX_DIST);float sa=fabsf(angle-sparkAngle[i]);if(sa>M_PI)sa=2.0f*M_PI-sa;if(sd<3.0f&&sa<0.15f)spBri=max(spBri,(1.0f-sd/3.0f)*max(0.0f,1.0f-elapsed*0.4f));}float total=constrain(swBri+cBri+spBri,0.0f,1.0f);uint8_t b=(uint8_t)(total*255.0f);uint8_t hue=(uint8_t)(swBri>cBri?20:0);uint8_t sat=(uint8_t)(200.0f-cBri*200.0f);setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 8. ACID TRIP (dimmed 35%)
@@ -106,7 +137,7 @@ void anim_acidTrip(uint32_t t) {
   for(int i=0;i<5;i++){cx[i]=sinf(tf*0.3f+i*1.3f)*45.0f;cy[i]=cosf(tf*0.4f+i*0.9f)*45.0f;}
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float v=0.0f;for(int i=0;i<5;i++){float d=sqrtf((x-cx[i])*(x-cx[i])+(y-cy[i])*(y-cy[i]));v+=sinf(d*0.15f-tf*(1.0f+i*0.3f));}v=(v+5.0f)/10.0f;uint8_t hue=(uint8_t)(v*255.0f+(uint8_t)(tf*50.0f));uint8_t bri=(uint8_t)((180.0f+sinf(v*M_PI*2.0f)*75.0f)*0.65f);setLED(true,xi+1,n,CRGB(CHSV(hue,240,bri)));}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float v=0.0f;for(int i=0;i<5;i++){float d=sqrtf((x-cx[i])*(x-cx[i])+(y-cy[i])*(y-cy[i]));v+=sinf(d*0.15f-tf*(1.0f+i*0.3f));}v=(v+5.0f)/10.0f;uint8_t hue=(uint8_t)(v*255.0f+(uint8_t)(tf*50.0f));uint8_t bri=(uint8_t)((180.0f+sinf(v*M_PI*2.0f)*75.0f)*0.65f);setLED(false,yi+1,n,CRGB(CHSV(hue,240,bri)));}}
-  FastLED.show();
+  showGrid();
 }
 
 // 9. BLACK HOLE
@@ -114,7 +145,7 @@ void anim_blackHole(uint32_t t) {
   float tf=t*0.001f;float eh=8.0f+sinf(tf*0.5f)*2.0f;
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float dist=sqrtf(x*x+y*y);float angle=atan2f(y,x);if(dist<eh){setLED(true,xi+1,n,CRGB::Black);continue;}float diskBri=expf(-(dist-eh)*0.08f);float diskSpin=fmod(angle-tf*2.0f+dist*0.05f,2.0f*M_PI)/(2.0f*M_PI);float diskPat=powf(fabsf(sinf(diskSpin*M_PI*6.0f)),3.0f);float jetBri=0.0f;float absA=fabsf(fabsf(angle)-M_PI/2.0f);if(absA<0.15f)jetBri=(1.0f-absA/0.15f)*min(1.0f,dist/30.0f)*max(0.0f,1.0f-dist/MAX_DIST)*1.5f;float total=constrain(diskBri*diskPat*0.8f+jetBri,0.0f,1.0f);uint8_t b=(uint8_t)(total*240.0f);uint8_t hue=jetBri>0.1f?150:(uint8_t)(20.0f+diskBri*30.0f);uint8_t sat=jetBri>0.1f?200:(uint8_t)(255.0f-diskBri*150.0f);setLED(true,xi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float dist=sqrtf(x*x+y*y);float angle=atan2f(y,x);if(dist<eh){setLED(false,yi+1,n,CRGB::Black);continue;}float diskBri=expf(-(dist-eh)*0.08f);float diskSpin=fmod(angle-tf*2.0f+dist*0.05f,2.0f*M_PI)/(2.0f*M_PI);float diskPat=powf(fabsf(sinf(diskSpin*M_PI*6.0f)),3.0f);float jetBri=0.0f;float absA=fabsf(fabsf(angle)-M_PI/2.0f);if(absA<0.15f)jetBri=(1.0f-absA/0.15f)*min(1.0f,dist/30.0f)*max(0.0f,1.0f-dist/MAX_DIST)*1.5f;float total=constrain(diskBri*diskPat*0.8f+jetBri,0.0f,1.0f);uint8_t b=(uint8_t)(total*240.0f);uint8_t hue=jetBri>0.1f?150:(uint8_t)(20.0f+diskBri*30.0f);uint8_t sat=jetBri>0.1f?200:(uint8_t)(255.0f-diskBri*150.0f);setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 10. WORMHOLE
@@ -122,7 +153,7 @@ void anim_wormhole(uint32_t t) {
   float tf=t*0.001f;
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float dist=sqrtf(x*x+y*y)/MAX_DIST;float lD=logf(1.0f+dist*9.0f)/logf(10.0f);float ring=fmod(lD*8.0f-tf*2.0f,1.0f);if(ring<0.0f)ring+=1.0f;float angle=atan2f(y,x);float twist=sinf(angle*3.0f+dist*5.0f-tf*1.5f)*0.3f+0.7f;float bri=powf(sinf(ring*M_PI),3.0f)*twist*(1.0f-dist*0.3f);uint8_t b=(uint8_t)(bri*230.0f);uint8_t hue=(uint8_t)(190.0f+dist*40.0f+ring*30.0f);setLED(true,xi+1,n,b>2?CRGB(CHSV(hue,240,b)):CRGB::Black);}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float dist=sqrtf(x*x+y*y)/MAX_DIST;float lD=logf(1.0f+dist*9.0f)/logf(10.0f);float ring=fmod(lD*8.0f-tf*2.0f,1.0f);if(ring<0.0f)ring+=1.0f;float angle=atan2f(y,x);float twist=sinf(angle*3.0f+dist*5.0f-tf*1.5f)*0.3f+0.7f;float bri=powf(sinf(ring*M_PI),3.0f)*twist*(1.0f-dist*0.3f);uint8_t b=(uint8_t)(bri*230.0f);uint8_t hue=(uint8_t)(190.0f+dist*40.0f+ring*30.0f);setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,240,b)):CRGB::Black);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 11. CELLULAR MITOSIS
@@ -130,7 +161,7 @@ void anim_mitosis(uint32_t t) {
   float tf=t*0.001f;float split=sinf(tf*0.6f)*35.0f;float bx1=split,by1=cosf(tf*0.4f)*20.0f;float bx2=-split,by2=-cosf(tf*0.4f)*20.0f;float br1=15.0f+sinf(tf*1.1f)*5.0f;float br2=15.0f+sinf(tf*0.9f+1.0f)*5.0f;
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float d1=sqrtf((x-bx1)*(x-bx1)+(y-by1)*(y-by1));float d2=sqrtf((x-bx2)*(x-bx2)+(y-by2)*(y-by2));float v1=max(0.0f,1.0f-d1/br1);float v2=max(0.0f,1.0f-d2/br2);float total=constrain(v1+v2,0.0f,1.0f);float membrane=max(powf(v1*(1.0f-v1)*4.0f,2.0f),powf(v2*(1.0f-v2)*4.0f,2.0f));float bri=total*0.4f+membrane*0.8f;uint8_t b=(uint8_t)(constrain(bri,0.0f,1.0f)*230.0f);uint8_t hue=(uint8_t)(85.0f+total*30.0f);uint8_t sat=(uint8_t)(200.0f-membrane*100.0f);setLED(true,xi+1,n,b>3?CRGB(CHSV(hue,sat,b)):CRGB::Black);}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float d1=sqrtf((x-bx1)*(x-bx1)+(y-by1)*(y-by1));float d2=sqrtf((x-bx2)*(x-bx2)+(y-by2)*(y-by2));float v1=max(0.0f,1.0f-d1/br1);float v2=max(0.0f,1.0f-d2/br2);float total=constrain(v1+v2,0.0f,1.0f);float membrane=max(powf(v1*(1.0f-v1)*4.0f,2.0f),powf(v2*(1.0f-v2)*4.0f,2.0f));float bri=total*0.4f+membrane*0.8f;uint8_t b=(uint8_t)(constrain(bri,0.0f,1.0f)*230.0f);uint8_t hue=(uint8_t)(85.0f+total*30.0f);uint8_t sat=(uint8_t)(200.0f-membrane*100.0f);setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,sat,b)):CRGB::Black);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 12. SOLAR FLARES
@@ -138,7 +169,7 @@ void anim_solarFlares(uint32_t t) {
   float tf=t*0.001f;
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float bri=0.0f;for(int f=0;f<4;f++){float fA=tf*0.7f+f*M_PI/2.0f;float aP=fmod(tf*0.5f+f*0.25f,1.0f);float aD=sinf(aP*M_PI)*60.0f;float aAng=fA+sinf(aP*M_PI)*0.8f;float ax=cosf(aAng)*aD;float ay=sinf(aAng)*aD;float d=sqrtf((x-ax)*(x-ax)+(y-ay)*(y-ay));bri+=max(0.0f,(1.0f-d/12.0f)*(1.0f-aP*0.5f));}bri=constrain(bri,0.0f,1.0f);uint8_t b=(uint8_t)(bri*240.0f);uint8_t hue=(uint8_t)(15.0f+bri*25.0f);uint8_t sat=(uint8_t)(255.0f-bri*100.0f);setLED(true,xi+1,n,b>3?CRGB(CHSV(hue,sat,b)):CRGB::Black);}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float bri=0.0f;for(int f=0;f<4;f++){float fA=tf*0.7f+f*M_PI/2.0f;float aP=fmod(tf*0.5f+f*0.25f,1.0f);float aD=sinf(aP*M_PI)*60.0f;float aAng=fA+sinf(aP*M_PI)*0.8f;float ax=cosf(aAng)*aD;float ay=sinf(aAng)*aD;float d=sqrtf((x-ax)*(x-ax)+(y-ay)*(y-ay));bri+=max(0.0f,(1.0f-d/12.0f)*(1.0f-aP*0.5f));}bri=constrain(bri,0.0f,1.0f);uint8_t b=(uint8_t)(bri*240.0f);uint8_t hue=(uint8_t)(15.0f+bri*25.0f);uint8_t sat=(uint8_t)(255.0f-bri*100.0f);setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,sat,b)):CRGB::Black);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 13. PARTICLE COLLIDER
@@ -148,7 +179,7 @@ void anim_collider(uint32_t t) {
   float phase=(t-collideStrike)*0.001f/3.5f;
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float dist=sqrtf(x*x+y*y);float angle=atan2f(y,x);float bri=0.0f;if(phase<0.7f){float inward=phase/0.7f;float bD=MAX_DIST*(1.0f-inward);float bW=4.0f;float d1=fabsf(dist-bD);float a1=fmod(fabsf(angle-inward*M_PI*3.0f),M_PI*2.0f);if(d1<bW&&a1<0.3f)bri+=(1.0f-d1/bW)*(1.0f-a1/0.3f);float a2=fmod(fabsf(angle+M_PI-inward*M_PI*3.0f),M_PI*2.0f);if(d1<bW&&a2<0.3f)bri+=(1.0f-d1/bW)*(1.0f-a2/0.3f);}else{float burst=(phase-0.7f)/0.3f;float sR=burst*MAX_DIST*1.5f;float sw=fabsf(dist-sR);bri=max(0.0f,(1.0f-sw/8.0f)*(1.0f-burst));bri+=max(0.0f,(1.0f-dist/15.0f)*(1.0f-burst*2.0f));}bri=constrain(bri,0.0f,1.0f);uint8_t b=(uint8_t)(bri*255.0f);uint8_t hue=phase<0.7f?(uint8_t)(130.0f+phase*100.0f):(uint8_t)(30.0f+(phase-0.7f)*200.0f);uint8_t sat=(uint8_t)(255.0f-bri*100.0f);setLED(true,xi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float dist=sqrtf(x*x+y*y);float angle=atan2f(y,x);float bri=0.0f;if(phase<0.7f){float inward=phase/0.7f;float bD=MAX_DIST*(1.0f-inward);float bW=4.0f;float d1=fabsf(dist-bD);float a1=fmod(fabsf(angle-inward*M_PI*3.0f),M_PI*2.0f);if(d1<bW&&a1<0.3f)bri+=(1.0f-d1/bW)*(1.0f-a1/0.3f);float a2=fmod(fabsf(angle+M_PI-inward*M_PI*3.0f),M_PI*2.0f);if(d1<bW&&a2<0.3f)bri+=(1.0f-d1/bW)*(1.0f-a2/0.3f);}else{float burst=(phase-0.7f)/0.3f;float sR=burst*MAX_DIST*1.5f;float sw=fabsf(dist-sR);bri=max(0.0f,(1.0f-sw/8.0f)*(1.0f-burst));bri+=max(0.0f,(1.0f-dist/15.0f)*(1.0f-burst*2.0f));}bri=constrain(bri,0.0f,1.0f);uint8_t b=(uint8_t)(bri*255.0f);uint8_t hue=phase<0.7f?(uint8_t)(130.0f+phase*100.0f):(uint8_t)(30.0f+(phase-0.7f)*200.0f);uint8_t sat=(uint8_t)(255.0f-bri*100.0f);setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 14. BREATHING MANDALA (dimmed 35%)
@@ -158,7 +189,7 @@ void anim_mandala(uint32_t t) {
   float breath=0.45f+sinf(tf*0.8f)*0.25f;
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;float dist=sqrtf(x*x+y*y);float angle=atan2f(y,x);float nD=dist/MAX_DIST;float sA=fmod(fabsf(fmod(angle,M_PI/4.0f)-(M_PI/8.0f)),M_PI/4.0f);float petal=sinf(sA*8.0f+tf*0.5f)*sinf(nD*M_PI*4.0f-tf*1.2f);float ring=sinf(nD*M_PI*6.0f-tf*0.8f);float radial=sinf(angle*6.0f+tf*0.3f);float v=(petal+ring+radial+3.0f)/6.0f*breath;v=constrain(v,0.0f,1.0f);uint8_t hue=(uint8_t)(v*180.0f+tf*15.0f+nD*60.0f);uint8_t bri=(uint8_t)(v*v*180.0f);setLED(true,xi+1,n,bri>3?CRGB(CHSV(hue,230,bri)):CRGB::Black);}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;float dist=sqrtf(x*x+y*y);float angle=atan2f(y,x);float nD=dist/MAX_DIST;float sA=fmod(fabsf(fmod(angle,M_PI/4.0f)-(M_PI/8.0f)),M_PI/4.0f);float petal=sinf(sA*8.0f+tf*0.5f)*sinf(nD*M_PI*4.0f-tf*1.2f);float ring=sinf(nD*M_PI*6.0f-tf*0.8f);float radial=sinf(angle*6.0f+tf*0.3f);float v=(petal+ring+radial+3.0f)/6.0f*breath;v=constrain(v,0.0f,1.0f);uint8_t hue=(uint8_t)(v*180.0f+tf*15.0f+nD*60.0f);uint8_t bri=(uint8_t)(v*v*180.0f);setLED(false,yi+1,n,bri>3?CRGB(CHSV(hue,230,bri)):CRGB::Black);}}
-  FastLED.show();
+  showGrid();
 }
 
 // 15. SHOCKWAVE CHAIN (dimmed 35%)
@@ -193,7 +224,7 @@ void anim_shockwaveChain(uint32_t t) {
     total=constrain(total,0.0f,1.0f);uint8_t b=(uint8_t)(total*210.0f);
     setLED(false,yi+1,n,b>4?CRGB(CHSV(bestHue,220,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // ══════════════════════════════════════════════
@@ -230,7 +261,7 @@ void anim_dualVortex(uint32_t t) {
     uint8_t b=(uint8_t)(total*220.0f);uint8_t hue=interference>0.3f?145:(uint8_t)(160.0f+briA*10.0f-briB*10.0f);
     setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,220,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 17. COLLAPSING FUNNEL
@@ -256,7 +287,7 @@ void anim_collapsingFunnel(uint32_t t) {
     uint8_t b=(uint8_t)(bri*230.0f);uint8_t hue=(uint8_t)(155.0f+cycle*20.0f);uint8_t sat=(uint8_t)(240.0f-cycle*80.0f);
     setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 18. PULSAR
@@ -288,7 +319,7 @@ void anim_pulsar(uint32_t t) {
     uint8_t hue=(uint8_t)(150.0f+trailDeg*0.05f);uint8_t sat=(uint8_t)(180.0f+trailFade*75.0f);
     setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 19. LIQUID METAL
@@ -316,7 +347,7 @@ void anim_liquidMetal(uint32_t t) {
     uint8_t b=(uint8_t)(bri*230.0f);uint8_t hue=(uint8_t)(hueBase+nD*30.0f+sp*20.0f);uint8_t sat=(uint8_t)(140.0f+bri*100.0f);
     setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 20. QUANTUM FOAM
@@ -347,7 +378,7 @@ void anim_quantumFoam(uint32_t t) {
     bri=constrain(bri*sinf(nD*M_PI),0.0f,1.0f);uint8_t b=(uint8_t)(bri*210.0f);uint8_t hue=(uint8_t)(148.0f+sinf(angle+tf)*8.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,230,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 21. ICE CROWN
@@ -380,7 +411,7 @@ void anim_iceCrown(uint32_t t) {
     uint8_t b=(uint8_t)(bri*240.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(160,(uint8_t)(150.0f+nD*90.0f),b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 22. DEEP ABYSS
@@ -414,7 +445,7 @@ void anim_deepAbyss(uint32_t t) {
     uint8_t hue=(uint8_t)(hueShift+nD*40.0f+sp*30.0f);uint8_t sat=(uint8_t)(200.0f+total*55.0f);
     setLED(false,yi+1,n,b>1?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 23. CORIOLIS STORM
@@ -447,7 +478,7 @@ void anim_coriolisStorm(uint32_t t) {
     uint8_t b=(uint8_t)(bri*230.0f);uint8_t hue=(uint8_t)(148.0f+nD*15.0f);uint8_t sat=(uint8_t)(200.0f+nD*55.0f);
     setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 24. FIBONACCI SPIRAL
@@ -478,7 +509,7 @@ void anim_fibonacci(uint32_t t) {
     bri=constrain(bri*sinf(nD*M_PI),0.0f,1.0f);uint8_t b=(uint8_t)(bri*220.0f);uint8_t hue=(uint8_t)(142.0f+nD*18.0f+tf*3.0f);
     setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,235,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 25. CRYSTAL FRACTURE
@@ -511,7 +542,7 @@ void anim_crystalFracture(uint32_t t) {
     bri=constrain(bri*sinf(nD*M_PI),0.0f,1.0f);uint8_t b=(uint8_t)(bri*240.0f);uint8_t sat=(uint8_t)(80.0f+nD*170.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(158,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // ──────────────────────────────────────────────
@@ -551,7 +582,7 @@ void anim_aurora(uint32_t t) {
     uint8_t b=(uint8_t)(bri*200.0f);uint8_t hue=(uint8_t)(palShift+band*160.0f+sinf(tf*0.2f+y*0.03f)*50.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,(uint8_t)(180.0f+curtain*75.0f),b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 26. LAVA LAMP
@@ -573,7 +604,7 @@ void anim_lavaLamp(uint32_t t,float dt) {
     total=constrain(total,0.0f,1.0f);uint8_t b=(uint8_t)(total*220.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(domHue,(uint8_t)(200.0f+total*55.0f),b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 27. ELECTRIC NERVOUS SYSTEM
@@ -595,7 +626,7 @@ void anim_nerveSystem(uint32_t t,float dt) {
     if(trail>-1.0f&&trail<trailLen){float fade=trail<0?0.4f:(1.0f-trail/trailLen);b=(trail<1.0f)?255:(uint8_t)(fade*fade*220.0f);}
     setLED(false,yi+1,n,b>0?CRGB(CHSV(nerveHue[idx],220,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 28. GRAVITY LENS
@@ -634,7 +665,7 @@ void anim_gravityLens(uint32_t t) {
     uint8_t b=(uint8_t)(total*230.0f);uint8_t hue=(uint8_t)(180.0f+pattern*60.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,220,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 29. TIDAL WAVE
@@ -663,7 +694,7 @@ void anim_tidalWave(uint32_t t) {
     uint8_t b=(uint8_t)(bri*220.0f);uint8_t hue=foam>0.3f?140:(uint8_t)(160.0f-wave*20.0f);uint8_t sat=foam>0.3f?(uint8_t)(255.0f-foam*200.0f):230;
     setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 30. CYMATICS
@@ -699,7 +730,7 @@ void anim_cymatics(uint32_t t) {
     uint8_t hue=cross>0.5f?accentHue:(uint8_t)(modeX*30.0f+tf*10.0f);
     setLED(false,yi+1,n,b>5?CRGB(CHSV(hue,cross>0.5f?255:220,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 31. STARFIELD WARP
@@ -722,7 +753,7 @@ void anim_starfieldWarp(uint32_t t,float dt) {
     float bestDY=999.0f;int bestYi=-1;for(int yi=0;yi<12;yi++){float d=fabsf(Y_POS[yi]-sy);if(d<bestDY){bestDY=d;bestYi=yi;}}
     if(bestDY<8.0f&&bestYi>=0){int led=(int)(sx+CENTER);if(led>=1&&led<=121){float warp=constrain(starDist[i]/MAX_DIST,0.0f,1.0f);uint8_t b=(uint8_t)(starBri[i]*warp);setLED(false,bestYi+1,led,CRGB(CHSV(200+i*3,180,b)));}}
   }
-  FastLED.show();
+  showGrid();
 }
 
 // 32. MAGNETIC FIELD LINES
@@ -764,7 +795,7 @@ void anim_magneticField(uint32_t t) {
     bri=constrain(bri+bri2,0.0f,1.0f);uint8_t b=(uint8_t)(bri*255.0f);uint8_t hue=mdotr>0?(uint8_t)(10.0f+bri*20.0f):(uint8_t)(160.0f+bri*20.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,220,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 33. PENDULUM CHAOS
@@ -794,7 +825,7 @@ void anim_pendulumChaos(uint32_t t,float dt) {
     for(int xi=0;xi<12;xi++){float d=fabsf(X_POS[xi]-px);if(d<6.0f){int led=(int)(py+CENTER);if(led>=1&&led<=121){uint8_t b=(uint8_t)(age*age*200.0f*(1.0f-d/6.0f));setLED(true,xi+1,led,b>3?CRGB(CHSV((uint8_t)(age*200),230,b)):CRGB::Black);}}}
     for(int yi=0;yi<12;yi++){float d=fabsf(Y_POS[yi]-py);if(d<6.0f){int led=(int)(px+CENTER);if(led>=1&&led<=121){uint8_t b=(uint8_t)(age*age*200.0f*(1.0f-d/6.0f));setLED(false,yi+1,led,b>3?CRGB(CHSV((uint8_t)(age*200),230,b)):CRGB::Black);}}}
   }
-  FastLED.show();
+  showGrid();
 }
 
 // 34. DARK MATTER
@@ -828,7 +859,7 @@ void anim_darkMatter(uint32_t t) {
     uint8_t b=(uint8_t)(bri*200.0f);uint8_t hue=(uint8_t)(200.0f+nD*30.0f+tf*5.0f);
     setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,240,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // ══════════════════════════════════════════════
@@ -881,7 +912,7 @@ void anim_squareTunnel(uint32_t t) {
     uint8_t sat=(uint8_t)(180.0f+fade*75.0f);
     drawGridSquare(r1,c1,r2,c2,CRGB(CHSV(hue,sat,b)));
   }
-  FastLED.show();
+  showGrid();
 }
 
 // 36. CONCENTRIC SQUARE PULSE
@@ -905,7 +936,7 @@ void anim_concentricSquares(uint32_t t) {
     uint8_t hue=(uint8_t)(tf*30.0f+half*20.0f);
     drawGridSquare(r1,c1,r2,c2,CRGB(CHSV(hue,220,b)));
   }
-  FastLED.show();
+  showGrid();
 }
 
 // 37. SQUARE RAIN
@@ -933,7 +964,7 @@ void anim_squareRain(uint32_t t) {
     if(r1>=r2||c1>=c2)continue;
     drawGridSquare(r1,c1,r2,c2,CRGB(CHSV(sqHue[i],220,b)));
   }
-  FastLED.show();
+  showGrid();
 }
 
 // 38. FOURFOLD SYMMETRY
@@ -962,7 +993,7 @@ void anim_fourfoldSymmetry(uint32_t t) {
     v=(v+2.0f)/4.0f;uint8_t hue=(uint8_t)(v*180.0f+tf*20.0f);uint8_t bri=(uint8_t)(sinf(v*M_PI)*220.0f);
     setLED(false,yi+1,n,bri>3?CRGB(CHSV(hue,230,bri)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 39. DIAMOND PULSE
@@ -994,7 +1025,7 @@ void anim_diamondPulse(uint32_t t) {
     uint8_t b=(uint8_t)(total*230.0f);uint8_t hue=(uint8_t)(manhattan*200.0f+tf*25.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,230,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 40. CHECKERBOARD MELT
@@ -1017,7 +1048,7 @@ void anim_checkerboardMelt(uint32_t t) {
     int r1=row+1;int c1=col+1;int r2=row+2;int c2=col+2;
     drawGridSquare(r1,c1,r2,c2,CRGB(CHSV(hue,230,b)));
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 41. GAME OF LIFE
@@ -1056,7 +1087,7 @@ void anim_gameOfLife(uint32_t t) {
     uint8_t bri=200;
     drawGridSquare(row+1,col+1,row+2,col+2,CRGB(CHSV(hue,sat,bri)));
   }
-  FastLED.show();
+  showGrid();
 }
 
 // 42. ROTATING CUBE
@@ -1108,7 +1139,7 @@ void anim_rotatingCube(uint32_t t) {
       }
     }
   }
-  FastLED.show();
+  showGrid();
 }
 
 // 43. SQUARE BREATHING
@@ -1132,7 +1163,7 @@ void anim_squareBreathing(uint32_t t) {
     uint8_t hue=(uint8_t)(tf*20.0f+layer*35.0f);
     drawGridSquare(r1,c1,r2,c2,CRGB(CHSV(hue,220,b)));
   }
-  FastLED.show();
+  showGrid();
 }
 
 // 44. FRACTAL SQUARES
@@ -1164,7 +1195,7 @@ void anim_fractalSquares(uint32_t t) {
       drawGridSquare(r1,c1,r2,c2,CRGB(CHSV(hue,220,b)));
     }
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ══════════════════════════════════════════════
@@ -1198,7 +1229,7 @@ void anim_silk(uint32_t t) {
     uint8_t b=(uint8_t)(bri*210.0f);uint8_t hue=(uint8_t)(v*120.0f+tf*8.0f+nX*20.0f);uint8_t sat=(uint8_t)(160.0f+v*80.0f);
     setLED(false,yi+1,n,CRGB(CHSV(hue,sat,b)));
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 46. DEEP BREATH
@@ -1231,7 +1262,7 @@ void anim_deepBreath(uint32_t t) {
     uint8_t localHue=(uint8_t)(hue+dist*20.0f);uint8_t sat=(uint8_t)(180.0f+localBreath*75.0f);
     setLED(false,yi+1,n,CRGB(CHSV(localHue,sat,b)));
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 47. SUNSET HORIZON
@@ -1270,7 +1301,7 @@ void anim_sunsetHorizon(uint32_t t) {
     uint8_t b=(uint8_t)(bri*220.0f);uint8_t sat=(uint8_t)(180.0f+horizonGlow*75.0f);
     setLED(false,yi+1,n,CRGB(CHSV(hue,sat,b)));
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 48. OIL SLICK
@@ -1300,7 +1331,7 @@ void anim_oilSlick(uint32_t t) {
     float bri=0.4f+0.5f*powf(sinf(thickness*M_PI*2.0f+tf*0.3f)*0.5f+0.5f,1.5f);
     setLED(false,yi+1,n,CRGB(CHSV(hue,255,(uint8_t)(bri*200.0f))));
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 49. EMBER GLOW
@@ -1335,7 +1366,7 @@ void anim_emberGlow(uint32_t t) {
     uint8_t sat=(uint8_t)(255.0f-bri*120.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 50. DEPTH MAP
@@ -1367,7 +1398,7 @@ void anim_depthMap(uint32_t t) {
     uint8_t hue=(uint8_t)(dist*160.0f+tf*4.0f);uint8_t sat=(uint8_t)(150.0f+dist*105.0f);uint8_t b=(uint8_t)(bri*230.0f);
     setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 51. NORTHERN MIST
@@ -1398,7 +1429,7 @@ void anim_northernMist(uint32_t t) {
     uint8_t hue=(uint8_t)(140.0f+mist*40.0f+tf*3.0f);uint8_t sat=(uint8_t)(100.0f+mist2*80.0f);
     setLED(false,yi+1,n,b>2?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 52. MOLTEN GOLD
@@ -1428,7 +1459,7 @@ void anim_moltenGold(uint32_t t) {
     uint8_t hue=(uint8_t)(25.0f-bri*10.0f);uint8_t sat=(uint8_t)(255.0f-bri*160.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 53. COSMIC DUST
@@ -1464,7 +1495,7 @@ void anim_cosmicDust(uint32_t t) {
     if(v3>0.01f){CRGB c=CRGB(CHSV(170,210,(uint8_t)(v3*160.0f)));col.r=qadd8(col.r,c.r);col.g=qadd8(col.g,c.g);col.b=qadd8(col.b,c.b);}
     setLED(false,yi+1,n,col);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // 54. HEARTGLOW
@@ -1507,7 +1538,7 @@ void anim_heartglow(uint32_t t) {
     uint8_t hue=(uint8_t)(5.0f+pulse*15.0f);uint8_t sat=(uint8_t)(255.0f-total*180.0f);
     setLED(false,yi+1,n,b>1?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // ══════════════════════════════════════════════
@@ -1726,7 +1757,7 @@ void anim_evolution(uint32_t t) {
   evoStep(t);
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;setLED(true,xi+1,n,evoColour(x,y,t));}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;setLED(false,yi+1,n,evoColour(x,y,t));}}
-  FastLED.show();
+  showGrid();
 }
 
 // ══════════════════════════════════════════════
@@ -1942,7 +1973,7 @@ void anim_morph(uint32_t t) {
 
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;setLED(true,xi+1,n,morphColour(x,y,t));}}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;setLED(false,yi+1,n,morphColour(x,y,t));}}
-  FastLED.show();
+  showGrid();
 }
 
 // ══════════════════════════════════════════════
@@ -2040,7 +2071,7 @@ void anim_wavePhysics(uint32_t t){
     uint8_t hue=u>0?(uint8_t)(40.0f-u*30.0f):(uint8_t)(160.0f+u*(-40.0f));
     setLED(false,yi+1,n,b>4?CRGB(CHSV(hue,(uint8_t)(180.0f+bri*75.0f),b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 void anim_reactionDiffusion(uint32_t t){ anim_wavePhysics(t); }
@@ -2125,7 +2156,7 @@ void anim_strangeAttractor(uint32_t t,float dt){
       }
     }
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ══════════════════════════════════════════════
@@ -2205,7 +2236,7 @@ void anim_harmonicResonance(uint32_t t, float dt){
     uint8_t hue=(uint8_t)(sum*200.0f+tf*8.0f+nY*30.0f);uint8_t sat=(uint8_t)(190.0f+bri*65.0f);
     setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 // ══════════════════════════════════════════════
@@ -2313,7 +2344,7 @@ void anim_neuralFire(uint32_t t){
     uint8_t hue=g>0.5f?150:(uint8_t)(200.0f+rState*30.0f);uint8_t sat=g>0.5f?(uint8_t)(255.0f-g*180.0f):240;
     setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
-  FastLED.show();
+  showGrid();
 }
 
 void anim_continuousCA(uint32_t t){ anim_neuralFire(t); }
@@ -2475,7 +2506,7 @@ void anim_plasmaLightning(uint32_t t,float dt){
       }
     }
   }
-  FastLED.show();
+  showGrid();
 }
 
 void anim_agentField(uint32_t t,float dt){ anim_plasmaLightning(t,dt); }
@@ -2489,28 +2520,11 @@ void anim_agentField(uint32_t t,float dt){ anim_plasmaLightning(t,dt); }
 #include <esp_now.h>
 #include <WiFi.h>
 
-// ── Messages — must match sender ──────────────────────
-typedef struct {
-  uint16_t heldMask;
-  uint8_t  eventBtn;
-  bool     eventPressed;
-  bool     isEvent;
-} GridMsg;
-
-// Receiver → Sender sync: current settings state
-typedef struct {
-  uint8_t brightness;
-  uint8_t strobeBrightness;
-  uint8_t strobeOnMs;
-  uint8_t strobeOffMs;
-  uint8_t strobeSquares;
-  int     animIndex;
-  float   animSpeed;
-  bool    blackoutActive;
-} SyncMsg;
-
 // ── Volatile state updated by ESP-NOW callback ────────
-volatile uint16_t espHeldMask      = 0;
+volatile GridMsg  cmdQ[16];                    // command ring buffer
+volatile uint8_t  cmdHead=0, cmdTail=0;
+volatile bool     espStrobe       = false;
+volatile bool     espModeStrobe   = false;
 volatile uint32_t espLastHeartbeat = 0;
 static uint8_t    senderMAC[6]     = {};
 static bool       senderKnown      = false;
@@ -2520,8 +2534,10 @@ void onReceive(const uint8_t* mac, const uint8_t* data, int len) {
   if(len != sizeof(GridMsg)) return;
   GridMsg msg;
   memcpy(&msg, data, sizeof(msg));
-  espHeldMask      = msg.heldMask;
+  espStrobe        = msg.strobe;
+  espModeStrobe    = msg.modeStrobe;
   espLastHeartbeat = millis();
+  if(msg.cmd != 0){ uint8_t nh=(cmdHead+1)&15; if(nh!=cmdTail){ memcpy((void*)&cmdQ[cmdHead],&msg,sizeof(msg)); cmdHead=nh; } }
   if(!senderKnown) {
     memcpy(senderMAC, mac, 6);
     senderKnown = true;
@@ -2554,6 +2570,9 @@ void saveSettings() {
   prefs.putUChar("soff", cfg.strobeOffMs);
   prefs.putUChar("ssq",  cfg.strobeSquares);
   prefs.putFloat("spd",  cfg.animSpeed);
+  prefs.putUChar("hue",  gHueBase);
+  prefs.putUChar("hspd", gHueSpeed);
+  prefs.putUChar("shue", gStrobeHue);
   prefs.end();
 }
 
@@ -2566,6 +2585,9 @@ void loadSettings() {
   cfg.strobeOffMs      = prefs.getUChar("soff", 40);
   cfg.strobeSquares    = prefs.getUChar("ssq",  30);
   cfg.animSpeed        = prefs.getFloat("spd",  1.0f);
+  gHueBase             = prefs.getUChar("hue",  0);
+  gHueSpeed            = prefs.getUChar("hspd", 0);
+  gStrobeHue           = prefs.getUChar("shue", 0);
   prefs.end();
   cfg.animIndex        = constrain(cfg.animIndex, 0, 58);
   cfg.brightness       = constrain(cfg.brightness, 1, MAX_BRIGHTNESS);
@@ -2737,7 +2759,7 @@ void anim_tetris(uint32_t at,float dt){
     int8_t cur[4][2]; tetCells(tetShape,tetRot,cur);
     for(int i=0;i<4;i++){ int rr=tetR+cur[i][0], cc=tetC+cur[i][1]; if(rr>=0) fillCell(rr,cc,CRGB(CHSV(tetHue,255,235))); }
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 40. SNAKE (self-playing) ═══════════
@@ -2792,7 +2814,7 @@ void anim_snake(uint32_t at,float dt){
     uint8_t v=(i==0)?255:(uint8_t)(90+120.0f*(1.0f-(float)i/snLen));
     fillCell(snR[i],snC[i],CRGB(CHSV(96,i==0?160:220,v)));  // body = green
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 41. ICON SHOW ═══════════
@@ -2805,7 +2827,7 @@ void anim_iconShow(uint32_t at){
   uint8_t hue=(uint8_t)(at/22);
   clearFrame();
   if(val>4) drawIcon(ICONS[idx],CRGB(CHSV(hue,235,val)));
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 42. BOUNCING LOGO ═══════════
@@ -2825,7 +2847,7 @@ void anim_bouncingLogo(uint32_t at,float dt){
   int ox=(int)(logoX+0.5f), oy=(int)(logoY+0.5f);
   for(int r=0;r<5;r++) for(int c=0;c<5;c++)
     if(LOGO[r]&(1<<(4-c))) fillCell(oy+r,ox+c,CRGB(CHSV(logoHue,255,215)));
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 43. STAR TUNNEL 3D ═══════════
@@ -2845,7 +2867,7 @@ void anim_starTunnel3D(uint32_t at,float dt){
     fillCell(ty,tx,CRGB(CHSV(hue,150,val/3)));           // dim trail
     fillCell(cy,cx,CRGB(CHSV(hue,120,val)));             // bright head
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 44. RIPPLE RAIN ═══════════
@@ -2872,7 +2894,7 @@ void anim_rippleRain(uint32_t at,float dt){
     for(int r=0;r<11;r++) for(int c=0;c<11;c++)
       if(max(iabs(r-rpR[i]),iabs(c-rpC[i]))==R) fillCell(r,c,CRGB(CHSV(rpHue[i],200,val)));
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 45. SPIRAL GALAXY ═══════════
@@ -2902,7 +2924,7 @@ void anim_spiralGalaxy(uint32_t t){
       setLED(false,yi+1,n, b>3?CRGB(CHSV(hue,r<0.14f?90:210,b)):CRGB::Black);
     }
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 46. PLASMA FIELD ═══════════
@@ -2930,7 +2952,7 @@ void anim_plasmaField(uint32_t t){
       setLED(false,yi+1,n,CRGB(CHSV(hue,230,200)));
     }
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 47. BREATHE GRADIENT (calm) ═══════════
@@ -2956,7 +2978,7 @@ void anim_breatheGradient(uint32_t t){
       setLED(false,yi+1,n,CRGB(CHSV(hue,190,b)));
     }
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 48. BOIDS (flocking) ═══════════
@@ -2991,7 +3013,7 @@ void anim_boids(uint32_t at,float dt){
     uint8_t hue=(uint8_t)((atan2f(bvy[i],bvx[i])+3.1416f)*40.0f);
     fillCell(row,col,CRGB(CHSV(hue,220,220)));
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 49. FIREWORKS ═══════════
@@ -3022,7 +3044,7 @@ void anim_fireworks(uint32_t at,float dt){
     uint8_t val=(uint8_t)constrain(fpl[i]*235.0f,0.0f,235.0f);
     fillCell(row,col,CRGB(CHSV(fphue[i],230,val)));
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 50. REACTION-DIFFUSION (Gray-Scott lite) ═══════════
@@ -3051,7 +3073,7 @@ void anim_reactionDiff(uint32_t at,float dt){
     uint8_t val=(uint8_t)constrain(rdB[r][c]*640.0f,0.0f,225.0f);
     if(val>4) fillCell(r,c,CRGB(CHSV((uint8_t)(150+rdB[r][c]*260.0f),210,val)));
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -3193,7 +3215,7 @@ void renderOverlay(uint32_t t){
     int x=12-(int)((el-OVL_HOLD)/OVL_STEP);
     drawTextCells(overlayName,x,TEXT_TOP,col);          // name scrolls slowly
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 0. SETUP / CALIBRATION GRID ═══════════
@@ -3208,7 +3230,7 @@ void anim_setupGrid(uint32_t t){
     }
   setLED(true, 1,INTS[0],CRGB(255,255,255));   // origin (X1,Y1) = white
   setLED(false,1,INTS[0],CRGB(255,255,255));
-  FastLED.show();
+  FastLED.show();                              // calibration must not be recoloured
 }
 
 // ═══════════ 52-54. SCROLLING TEXT BANNERS ═══════════
@@ -3222,7 +3244,7 @@ void anim_scrollBanner(const char* s,uint32_t at,uint8_t baseHue){
     int span=w+12+3, pos=(int)((at/700)%span);        // too wide → slow scroll
     drawTextCells(s,12-pos,TEXT_TOP,col);
   }
-  FastLED.show();
+  showGrid();
 }
 void anim_textTOGA(uint32_t at){   anim_scrollBanner("TOGA",  at, 40); }
 void anim_textCASTLE(uint32_t at){ anim_scrollBanner("CASTLE",at,140); }
@@ -3277,7 +3299,7 @@ void anim_stickman(uint32_t at,float dt){
   if(rnJumping){ drawVSeg(F-2,C-1,col); drawVSeg(F-2,C+1,col); }    // legs spread (airborne)
   else if(f){ drawVSeg(F-2,C-1,col); drawVSeg(F-1,C-1,col); drawVSeg(F-2,C+1,col); } // stride A
   else      { drawVSeg(F-2,C+1,col); drawVSeg(F-1,C+1,col); drawVSeg(F-2,C-1,col); } // stride B
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 56. PADDLE & BALL (keep the ball up / Breakout) ═══════════
@@ -3308,7 +3330,7 @@ void anim_paddleBall(uint32_t at,float dt){
   for(int r=0;r<3;r++) for(int c=0;c<11;c++) if(pbBrick[r][c]) fillCell(r,c,CRGB(CHSV((uint8_t)(c*18+r*50),220,150)));
   fillCell(10,pc-1,CRGB(CHSV(140,220,200))); fillCell(10,pc,CRGB(CHSV(140,220,200))); fillCell(10,pc+1,CRGB(CHSV(140,220,200)));
   fillCell(br,bc,CRGB(255,255,255));
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 57. SMILEY (changing expressions) ═══════════
@@ -3345,47 +3367,51 @@ void anim_smiley(uint32_t at){
       drawHSeg(2,2,mth); drawVSeg(2,3,mth); drawHSeg(2,6,mth); drawVSeg(2,8,mth);
       smArc(9.3f,5.5f,3.4f,mth,2); break;
   }
-  FastLED.show();
+  showGrid();
 }
 
 // ═══════════ 58. EYE (looks around & blinks) ═══════════
-// Almond/horizontal-ellipse eye: lower lid fixed, upper lid sweeps down to
-// meet it (like a human blink). Lids share corners at (CY, CX±A).
+// Rendered per-LED as a smooth field (soft, anti-aliased edges — like the
+// older radial animations) rather than hard strip segments. Horizontal
+// almond sclera + moving iris/pupil; upper lid sweeps down to blink.
 bool eyeInit=false;
 static float eyeGx,eyeGy,eyeTx,eyeTy; static uint32_t eyeMoveT,eyeBlinkT; static bool eyeBlk;
-// Smooth ellipse arc = a vertically-scaled circle, rendered by proximity so
-// it picks whichever H/V segments hug the curve (much rounder than a stair
-// march). half: 0=full, 1=lower half, 2=upper half.
-void drawEllipseArc(float cy,float cx,float a,float b,CRGB col,int half){
-  if(b<0.15f) b=0.15f;
-  float s=a/b;
-  for(int R=0;R<=11;R++) for(int C=0;C<11;C++){
-    float ry=R-cy, dy=ry*s, dx=(C+0.5f)-cx, d=sqrtf(dx*dx+dy*dy);
-    if(fabsf(d-a)<0.9f && (half==0||(half==1&&ry>-0.2f)||(half==2&&ry<0.2f))) drawHSeg(R,C,col);
-  }
-  for(int R=0;R<11;R++) for(int C=0;C<=11;C++){
-    float ry=(R+0.5f)-cy, dy=ry*s, dx=C-cx, d=sqrtf(dx*dx+dy*dy);
-    if(fabsf(d-a)<0.9f && (half==0||(half==1&&ry>-0.2f)||(half==2&&ry<0.2f))) drawVSeg(R,C,col);
-  }
+// Eye colour at world point (x,y). Returns false if this LED stays dark.
+bool eyePixel(float x,float y,float gx,float gy,float bp,CRGB &out){
+  const float A=56.0f,B=27.0f,RI=13.5f,RP=6.5f,SOFT=5.0f;       // larger almond, bigger pupil
+  float ax=x/A, qx=1.0f-ax*ax; if(qx<=-0.06f) return false;      // outside (margin keeps the outline)
+  float sq=sqrtf(qx>0.0f?qx:0.0f);
+  float e=ax*ax+(y/B)*(y/B);
+  float outF=constrain(1.0f-fabsf(e-1.0f)/0.16f,0.0f,1.0f);      // almond outline — always visible
+  float openTop=(2.0f*bp-1.0f)*B*sq, openBot=B*sq;               // upper lid sweeps down to close
+  float vis=constrain((y-openTop)/SOFT,0.0f,1.0f)*constrain((openBot-y)/SOFT,0.0f,1.0f);
+  float scl=constrain((0.94f-e)/0.12f,0.0f,1.0f)*vis;           // sclera fill (hidden by the lid)
+  float dg=sqrtf((x-gx)*(x-gx)+(y-gy)*(y-gy));
+  float irisF=constrain((RI-dg)/SOFT,0.0f,1.0f);
+  float pupF =constrain((RP-dg)/SOFT,0.0f,1.0f);
+  float wF=fmaxf(outF*0.5f, scl*(1.0f-irisF));                   // dim contour, or bright fill
+  float iF=irisF*(1.0f-pupF)*vis;                               // iris ring (dark pupil), hidden by lid
+  if(wF<0.02f && iF<0.02f) return false;
+  uint8_t wv=(uint8_t)(wF*160.0f);
+  CRGB c(wv,wv,(uint8_t)(wv*0.85f));                            // warm-white sclera / contour
+  CRGB ir=CRGB(CHSV(140,225,(uint8_t)(iF*235.0f)));            // teal iris
+  out=CRGB(qadd8(c.r,ir.r),qadd8(c.g,ir.g),qadd8(c.b,ir.b));
+  return true;
 }
 void anim_eye(uint32_t at,float dt){
-  if(!eyeInit){ eyeGx=eyeGy=eyeTx=eyeTy=5.5f; eyeMoveT=at; eyeBlinkT=at; eyeBlk=false; eyeInit=true; }
-  if(at-eyeMoveT>1100){ eyeMoveT=at; eyeTx=3.6f+frand()*3.8f; eyeTy=4.9f+frand()*1.2f; }  // new gaze target
+  if(!eyeInit){ eyeGx=eyeGy=eyeTx=eyeTy=0.0f; eyeMoveT=at; eyeBlinkT=at; eyeBlk=false; eyeInit=true; }
+  if(at-eyeMoveT>1200){ eyeMoveT=at; eyeTx=frand()*52.0f-26.0f; eyeTy=frand()*16.0f-8.0f; }  // new gaze
   float k=dt*0.005f; if(k>1) k=1;
-  eyeGx+=(eyeTx-eyeGx)*k; eyeGy+=(eyeTy-eyeGy)*k;                     // smooth eye movement
+  eyeGx+=(eyeTx-eyeGx)*k; eyeGy+=(eyeTy-eyeGy)*k;                 // smooth eye movement
   if(!eyeBlk && at-eyeBlinkT>2800){ eyeBlk=true; eyeBlinkT=at; }
-  float bp=0; if(eyeBlk){ uint32_t e=at-eyeBlinkT; if(e>=280) eyeBlk=false; else bp=1.0f-fabsf((float)e-140.0f)/140.0f; }
-  const float CY=5.5f,CX=5.5f,A=4.8f,B=2.6f;   // horizontal ellipse (wide, short)
-  CRGB lid=CRGB(CHSV(0,0,220)), iris=CRGB(CHSV(140,230,225)), pup=CRGB(255,255,255);
+  float bp=0; if(eyeBlk){ uint32_t e=at-eyeBlinkT; if(e>=460) eyeBlk=false; else bp=1.0f-fabsf((float)e-230.0f)/230.0f; }  // slower lid
   clearFrame();
-  drawEllipseArc(CY,CX,A,B,lid,1);              // lower lid (fixed)
-  float Bu=B*(1.0f-2.0f*bp);                     // upper lid sweeps: top → centre → lower lid
-  if(Bu>=0) drawEllipseArc(CY,CX,A,Bu,lid,2); else drawEllipseArc(CY,CX,A,-Bu,lid,1);
-  if(bp<0.35f){                                  // eyeball hidden once the lid is most of the way down
-    smArc(eyeGy,eyeGx,1.2f,iris,0);              // iris follows gaze
-    smArc(eyeGy,eyeGx,0.6f,pup,0);               // pupil
-  }
-  FastLED.show();
+  CRGB c;
+  for(int xi=0;xi<12;xi++){ float x=X_POS[xi];
+    for(int n=1;n<=121;n++){ float y=(float)n-CENTER; if(eyePixel(x,y,eyeGx,eyeGy,bp,c)) setLED(true,xi+1,n,c); } }
+  for(int yi=0;yi<12;yi++){ float y=Y_POS[yi];
+    for(int n=1;n<=121;n++){ float x=(float)n-CENTER; if(eyePixel(x,y,eyeGx,eyeGy,bp,c)) setLED(false,yi+1,n,c); } }
+  showGrid();
 }
 
 #define TOTAL_ANIMS 59
@@ -3438,6 +3464,26 @@ void setup() {
   Serial.printf("Grid ready. %d animations.\n", TOTAL_ANIMS);
 }
 
+// Apply one command from the controller.
+void applyCommand(const GridMsg& m, uint32_t t){
+  if(m.cmd==1){                                    // mode step
+    cfg.animIndex=(cfg.animIndex+m.arg+TOTAL_ANIMS)%TOTAL_ANIMS;
+    resetAnimState(t); saveSettings(); triggerOverlay(t,cfg.animIndex);
+  } else if(m.cmd==2){                              // parameter step
+    int d=m.arg;
+    switch(m.target){
+      case 0: cfg.brightness=(uint8_t)constrain((int)cfg.brightness+d*BRI_STEP,1,MAX_BRIGHTNESS); FastLED.setBrightness(cfg.brightness); break;
+      case 1: cfg.animSpeed=constrain(cfg.animSpeed+d*0.1f,0.1f,4.0f); break;
+      case 2: gHueBase  =(uint8_t)(gHueBase  +d*6); break;   // Color (wraps)
+      case 3: gStrobeHue=(uint8_t)(gStrobeHue+d*6); break;   // Strobe colour (wraps)
+      case 4: gHueSpeed =(uint8_t)constrain((int)gHueSpeed+d,0,40); break; // Hue speed
+    }
+    saveSettings();
+  } else if(m.cmd==3){                              // tap-tempo: set absolute speed
+    cfg.animSpeed=constrain(m.arg/1000.0f,0.1f,4.0f); saveSettings();
+  }
+}
+
 void loop() {
   static uint32_t lastFrame     = 0;
   static uint32_t lastT         = 0;
@@ -3450,95 +3496,28 @@ void loop() {
   uint32_t t  = millis();
   lastT       = t;
 
-  // ── Timeout → treat all as released ──────────────
-  // No heartbeat for 400ms = sender disconnected or reset
+  // ── Sender alive? (heartbeat within timeout) ──────
   bool senderAlive = (espLastHeartbeat > 0) &&
                      ((t - (uint32_t)espLastHeartbeat) < (uint32_t)HEARTBEAT_TIMEOUT);
-  uint16_t held = senderAlive ? (uint16_t)espHeldMask : 0;
 
-  // ── Strobe: purely level-driven by bit 15 ─────────
-  bool strobeHeld = (held >> 15) & 1;
-  if(strobeHeld && !strobeActive) {
-    preStrobeAnim = cfg.animIndex;
-    preStrobeBri  = cfg.brightness;
-    strobeActive  = true;
-    strobeOn      = false;
-    strobeFlip    = t;
-    Serial.println("  STROBE ON");
-  } else if(!strobeHeld && strobeActive) {
-    strobeActive  = false;
-    strobeOn      = false;
-    cfg.animIndex = preStrobeAnim;
-    cfg.brightness= preStrobeBri;
+  // ── Strobe: momentary, driven by the controller ──
+  bool strobeHeld = senderAlive && espStrobe;
+  if(strobeHeld && !strobeActive){
+    preStrobeAnim=cfg.animIndex; preStrobeBri=cfg.brightness;
+    strobeActive=true; strobeOn=false; strobeFlip=t;
+  } else if(!strobeHeld && strobeActive){
+    strobeActive=false; strobeOn=false;
+    cfg.animIndex=preStrobeAnim; cfg.brightness=preStrobeBri;
     FastLED.setBrightness(cfg.brightness);
     FastLED.clear();
     for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
     FastLED.show();
-    Serial.printf("  STROBE OFF → Anim %d Bri %d\n", cfg.animIndex+1, cfg.brightness);
   }
 
-  static uint32_t recvPressTime[16]   = {};
-  static uint32_t recvLastRepeat[16]  = {};
-  static uint16_t prevHeld            = 0;
-  static bool     blackoutActive      = false;
-  static int      preBlackoutAnim     = 0;
-
-  uint16_t rising  = held & ~prevHeld;
-  prevHeld = held;
-
-  // Record press times
-  if(rising)
-    for(int i=0;i<16;i++) if((rising>>i)&1){ recvPressTime[i]=t; recvLastRepeat[i]=t; }
-
-  // ── Blackout toggle (button 11, rising edge only) ──
-  if((rising>>11)&1) {
-    if(!blackoutActive) {
-      blackoutActive   = true;
-      preBlackoutAnim  = cfg.animIndex;
-      FastLED.clear();
-      for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
-      FastLED.show();
-      Serial.println("  BLACKOUT ON");
-    } else {
-      blackoutActive   = false;
-      cfg.animIndex    = preBlackoutAnim;
-      Serial.println("  BLACKOUT OFF");
-    }
-  }
-
-  // ── Strobe overrides blackout while held ──
-  // (handled below — strobe check uses strobeHeld regardless of blackout)
-
-  // ── Mode buttons: rising edge only, blocked in blackout ──
-  if((rising>>2)&1&&!strobeActive&&!blackoutActive){cfg.animIndex=(cfg.animIndex+1)%TOTAL_ANIMS;resetAnimState(t);saveSettings();triggerOverlay(t,cfg.animIndex);Serial.printf("  →Anim%d\n",cfg.animIndex+1);}
-  if((rising>>6)&1&&!strobeActive&&!blackoutActive){cfg.animIndex=(cfg.animIndex-1+TOTAL_ANIMS)%TOTAL_ANIMS;resetAnimState(t);saveSettings();triggerOverlay(t,cfg.animIndex);Serial.printf("  ←Anim%d\n",cfg.animIndex+1);}
-
-  // ── Value buttons: hold-repeat with acceleration ──
-  int valueBtns[] = {0,4,1,5,8,12,9,13,10,14};
-  for(int vi=0;vi<10;vi++){
-    int i=valueBtns[vi];
-    if(!((held>>i)&1)) continue;
-    uint32_t heldFor = t - recvPressTime[i];
-    uint32_t rate;
-    if(heldFor==0)                  rate=0;
-    else if(heldFor < REPEAT_DELAY) continue;
-    else if(heldFor < 2000)         rate=REPEAT_RATE;
-    else if(heldFor < 4000)         rate=REPEAT_RATE/2;
-    else                            rate=REPEAT_RATE/5;
-    if(heldFor>0 && t-recvLastRepeat[i]<rate) continue;
-    recvLastRepeat[i]=t;
-    switch(i){
-      case 0:  cfg.brightness=(uint8_t)min((int)cfg.brightness+BRI_STEP,MAX_BRIGHTNESS);if(!strobeActive&&!blackoutActive)FastLED.setBrightness(cfg.brightness);saveSettings();break;
-      case 4:  cfg.brightness=(uint8_t)max((int)cfg.brightness-BRI_STEP,1);if(!strobeActive&&!blackoutActive)FastLED.setBrightness(cfg.brightness);saveSettings();break;
-      case 1:  cfg.animSpeed=constrain(cfg.animSpeed+0.1f,0.1f,4.0f);saveSettings();Serial.printf("  Spd→%.2f\n",cfg.animSpeed);break;
-      case 5:  cfg.animSpeed=constrain(cfg.animSpeed-0.1f,0.1f,4.0f);saveSettings();Serial.printf("  Spd→%.2f\n",cfg.animSpeed);break;
-      case 8:  cfg.strobeBrightness=(uint8_t)min((int)cfg.strobeBrightness+STROBE_BRI_STEP,255);saveSettings();break;
-      case 12: cfg.strobeBrightness=(uint8_t)max((int)cfg.strobeBrightness-STROBE_BRI_STEP,1);saveSettings();break;
-      case 9:  cfg.strobeOnMs=(uint8_t)max((int)cfg.strobeOnMs-STROBE_FREQ_STEP,5);cfg.strobeOffMs=cfg.strobeOnMs;saveSettings();break;
-      case 13: cfg.strobeOnMs=(uint8_t)min((int)cfg.strobeOnMs+STROBE_FREQ_STEP,200);cfg.strobeOffMs=cfg.strobeOnMs;saveSettings();break;
-      case 10: cfg.strobeSquares=(uint8_t)min((int)cfg.strobeSquares+STROBE_SQ_STEP,122);saveSettings();break;
-      case 14: cfg.strobeSquares=(uint8_t)max((int)cfg.strobeSquares-STROBE_SQ_STEP,1);saveSettings();break;
-    }
+  // ── Apply queued commands from the controller ──────
+  while(cmdTail!=cmdHead){
+    GridMsg m; memcpy(&m,(const void*)&cmdQ[cmdTail],sizeof(m)); cmdTail=(cmdTail+1)&15;
+    applyCommand(m,t);
   }
 
   if(t-lastFrame<20)return;
@@ -3554,6 +3533,9 @@ void loop() {
   virtualT += frameDt * cfg.animSpeed;
   uint32_t at = (uint32_t)virtualT;
   float    dt = frameDt * cfg.animSpeed;
+
+  // ── Auto-rotate the global hue by Hue-speed ───────
+  static float hueAcc=0; hueAcc+=gHueSpeed*frameDt*0.02f; if(hueAcc>=256.0f)hueAcc-=256.0f; gHueAuto=(uint8_t)hueAcc;
 
   // ── Send sync to sender every 200ms so it knows current state ──
   static uint32_t lastSync=0;
@@ -3573,9 +3555,15 @@ void loop() {
       sync.strobeOnMs       = cfg.strobeOnMs;
       sync.strobeOffMs      = cfg.strobeOffMs;
       sync.strobeSquares    = cfg.strobeSquares;
+      sync.hueBase          = gHueBase;
+      sync.hueSpeed         = gHueSpeed;
+      sync.strobeHue        = gStrobeHue;
+      CRGB tc=CRGB(CHSV((uint8_t)(gHueBase+gHueAuto),255,220));   // exact tint colour (rainbow map + auto)
+      sync.tintR=tc.r; sync.tintG=tc.g; sync.tintB=tc.b;
+      CRGB sc=(gStrobeHue==0)?CRGB(200,200,200):CRGB(CHSV(gStrobeHue,255,220));
+      sync.sColR=sc.r; sync.sColG=sc.g; sync.sColB=sc.b;
       sync.animIndex        = cfg.animIndex;
       sync.animSpeed        = cfg.animSpeed;
-      sync.blackoutActive   = blackoutActive;
       esp_now_send(senderMAC,(uint8_t*)&sync,sizeof(sync));
     }
   }
@@ -3586,11 +3574,12 @@ void loop() {
       strobeOn=!strobeOn;
       strobeFlip=t+(uint32_t)(strobeOn?cfg.strobeOnMs:cfg.strobeOffMs);
       if(strobeOn){
+        CRGB sc = gStrobeHue==0 ? CRGB(CRGB::White) : CRGB(CHSV(gStrobeHue,255,255));  // Strobe colour (0 = white)
         FastLED.setBrightness(cfg.strobeBrightness);
         FastLED.clear();
         if(cfg.strobeSquares >= 122) {
           for(int e=0;e<NUM_ELEC;e++){
-            for(int i=0;i<LEDS_PER_STRIP;i++){ledsX[e][i]=CRGB::White;ledsY[e][i]=CRGB::White;}
+            for(int i=0;i<LEDS_PER_STRIP;i++){ledsX[e][i]=sc;ledsY[e][i]=sc;}
             ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;
             ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;
           }
@@ -3602,8 +3591,8 @@ void loop() {
           for(int s=0;s<(int)count;s++){
             int row=sqIdx[s]/11;int col=sqIdx[s]%11;
             int r1=row+1;int c1=col+1;int r2=row+2;int c2=col+2;
-            for(int led=INTS[col]+1;led<INTS[col+1];led++){setLED(false,r1,led,CRGB::White);setLED(false,r2,led,CRGB::White);}
-            for(int led=INTS[row]+1;led<INTS[row+1];led++){setLED(true,c1,led,CRGB::White);setLED(true,c2,led,CRGB::White);}
+            for(int led=INTS[col]+1;led<INTS[col+1];led++){setLED(false,r1,led,sc);setLED(false,r2,led,sc);}
+            for(int led=INTS[row]+1;led<INTS[row+1];led++){setLED(true,c1,led,sc);setLED(true,c2,led,sc);}
           }
         }
         FastLED.show();
@@ -3616,14 +3605,6 @@ void loop() {
     return;
   }
 
-  // ── Blackout: grid stays dark ─────────────────────
-  if(blackoutActive){
-    FastLED.clear();
-    for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
-    FastLED.show();
-    return;
-  }
-
   // ── Mode-change overlay: show number + name briefly ──
   if(t < overlayUntil){
     FastLED.setBrightness(cfg.brightness);
@@ -3631,8 +3612,21 @@ void loop() {
     return;
   }
 
+  // ── Mode strobe: flash the CURRENT animation on/off, a bit brighter (button 14) ──
+  bool modeStrobeHeld = senderAlive && espModeStrobe;
+  if(modeStrobeHeld){
+    static bool msOn=true; static uint32_t msFlip=0;
+    if((int32_t)(t-msFlip)>=0){ msOn=!msOn; msFlip=t+(uint32_t)(msOn?cfg.strobeOnMs:cfg.strobeOffMs); }
+    if(!msOn){                                   // off phase → dark
+      FastLED.clear();
+      for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
+      FastLED.show();
+      return;
+    }
+  }
+
   // ── Normal animation ──────────────────────────────
-  FastLED.setBrightness(cfg.brightness);
+  FastLED.setBrightness(modeStrobeHeld ? (uint8_t)min((int)cfg.brightness*7/4,255) : cfg.brightness);
   switch(cfg.animIndex){
     case 0:  anim_setupGrid(at);           break;
     case 1:  anim_heartbeat(at);           break;
