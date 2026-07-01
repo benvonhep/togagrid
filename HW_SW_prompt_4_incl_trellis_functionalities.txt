@@ -1,0 +1,678 @@
+=============================================================
+  HW/SW INTERFACE DOCUMENT
+  ESP32 WS2812B 12x12 LED Grid + NeoTrellis Wireless Controller
+  Version 2.0
+=============================================================
+
+-------------------------------------------------------------
+SYSTEM OVERVIEW
+-------------------------------------------------------------
+
+The system consists of TWO ESP32 devices communicating via
+ESP-NOW (Wi-Fi peer-to-peer, no router needed):
+
+  DEVICE A — LED Grid Controller (Receiver)
+    Controls 12x12 WS2812B LED grid
+    MAC: f4:65:0b:e8:98:60
+    Firmware: animations.ino (grid_SW)
+
+  DEVICE B — NeoTrellis Controller (Sender)
+    Adafruit NeoTrellis 4x4 silicone button pad + RGB LEDs
+    MAC: 44:1d:64:fa:b0:f8
+    Firmware: trellis_sender.ino
+
+Both devices share the same NVS namespace "grid" and
+use the same key names so either can be power-cycled
+independently — settings persist and sync within 200ms
+of reconnection.
+
+=============================================================
+PART 1 — LED GRID (DEVICE A)
+=============================================================
+
+-------------------------------------------------------------
+1. PHYSICAL GRID
+-------------------------------------------------------------
+
+The installation consists of a 12x12 grid of LED strips:
+  - 12 strips running vertically   → called X strips (X1..X12)
+  - 12 strips running horizontally → called Y strips (Y1..Y12)
+
+Coordinate origin: TOP-LEFT corner of the grid.
+
+  X1  is the leftmost  vertical strip
+  X12 is the rightmost vertical strip
+  Y1  is the topmost   horizontal strip
+  Y12 is the bottommost horizontal strip
+
+Each strip contains 121 individually addressable LEDs,
+numbered 1..121 starting from the strip's visual START end.
+
+  LED 1   = visual start (origin side, upper-left region)
+  LED 121 = visual end
+
+Visual start direction per strip:
+  X strips: LED 1 is on the TOP    side, LED 121 on the BOTTOM
+  Y strips: LED 1 is on the LEFT   side, LED 121 on the RIGHT
+
+-------------------------------------------------------------
+2. ELECTRICAL TOPOLOGY
+-------------------------------------------------------------
+
+Each pair of visual strips is driven by ONE physical electrical
+strip. The electrical strip has 258 LEDs total:
+
+  LEDs  1..121  → Section A (first  visual strip of the pair)
+  LEDs 122..136 → Spacer    (15 LEDs, never used, always OFF)
+  LEDs 137..258 → Section C (second visual strip of the pair)
+
+Note: In software, spacer LEDs are accessed as indices
+255, 256, 257 (not 121-135) — this is a quirk of the
+FastLED array layout. Always explicitly set them to BLACK.
+
+ELECTRICAL STRIP PAIRING:
+
+  X axis:
+  ┌─────────────────┬──────────────┬───────────────┐
+  │ Electrical Strip│ Visual Strip │ ESP32 GPIO    │
+  ├─────────────────┼──────────────┼───────────────┤
+  │ elec X0         │ X1  and X2   │ GPIO 14       │
+  │ elec X1         │ X3  and X4   │ GPIO 15       │
+  │ elec X2         │ X5  and X6   │ GPIO 17       │
+  │ elec X3         │ X7  and X8   │ GPIO 16       │
+  │ elec X4         │ X9  and X10  │ GPIO 13       │
+  │ elec X5         │ X11 and X12  │ GPIO 18       │
+  └─────────────────┴──────────────┴───────────────┘
+
+  Y axis:
+  ┌─────────────────┬──────────────┬───────────────┐
+  │ Electrical Strip│ Visual Strip │ ESP32 GPIO    │
+  ├─────────────────┼──────────────┼───────────────┤
+  │ elec Y0         │ Y1  and Y2   │ GPIO 21       │
+  │ elec Y1         │ Y3  and Y4   │ GPIO 22       │
+  │ elec Y2         │ Y5  and Y6   │ GPIO 23       │
+  │ elec Y3         │ Y7  and Y8   │ GPIO 25       │
+  │ elec Y4         │ Y9  and Y10  │ GPIO 26       │
+  │ elec Y5         │ Y11 and Y12  │ GPIO 19       │
+  └─────────────────┴──────────────┴───────────────┘
+
+The ODD visual strip  (X1,X3,X5...Y1,Y3,Y5...) is Section A.
+The EVEN visual strip (X2,X4,X6...Y2,Y4,Y6...) is Section C.
+Section C runs in the OPPOSITE physical direction to Section A.
+
+IMPORTANT: GPIO 27 is hardwired to OE pin of level shifters.
+  Do NOT use GPIO 27 in software.
+
+BOOT GARBAGE FIX — always run at startup:
+  FastLED.clear(true); delay(200);
+  FastLED.clear(true); delay(200);
+
+-------------------------------------------------------------
+3. SOFTWARE BUFFERS
+-------------------------------------------------------------
+
+  CRGB ledsX[6][258];   // X axis: 6 electrical strips x 258 LEDs
+  CRGB ledsY[6][258];   // Y axis: 6 electrical strips x 258 LEDs
+
+  ledsX[0] = GPIO14 = X1  and X2
+  ledsX[1] = GPIO15 = X3  and X4
+  ledsX[2] = GPIO17 = X5  and X6
+  ledsX[3] = GPIO16 = X7  and X8
+  ledsX[4] = GPIO13 = X9  and X10
+  ledsX[5] = GPIO18 = X11 and X12
+
+  ledsY[0] = GPIO21 = Y1  and Y2
+  ledsY[1] = GPIO22 = Y3  and Y4
+  ledsY[2] = GPIO23 = Y5  and Y6
+  ledsY[3] = GPIO25 = Y7  and Y8
+  ledsY[4] = GPIO26 = Y9  and Y10
+  ledsY[5] = GPIO19 = Y11 and Y12
+
+Buffer index ranges per electrical strip:
+  Section A (odd visual strip):  indices 0..120    (121 LEDs)
+  Spacer:                        indices 255,256,257  ← NEVER WRITE
+  Section C (even visual strip): indices 136..257   (122 LEDs)
+
+FastLED strip registration order:
+  FastLED.addLeds<WS2812B,14,GRB>(ledsX[0],258);
+  FastLED.addLeds<WS2812B,15,GRB>(ledsX[1],258);
+  FastLED.addLeds<WS2812B,17,GRB>(ledsX[2],258);
+  FastLED.addLeds<WS2812B,16,GRB>(ledsX[3],258);
+  FastLED.addLeds<WS2812B,13,GRB>(ledsX[4],258);
+  FastLED.addLeds<WS2812B,18,GRB>(ledsX[5],258);
+  FastLED.addLeds<WS2812B,21,GRB>(ledsY[0],258);
+  FastLED.addLeds<WS2812B,22,GRB>(ledsY[1],258);
+  FastLED.addLeds<WS2812B,23,GRB>(ledsY[2],258);
+  FastLED.addLeds<WS2812B,25,GRB>(ledsY[3],258);
+  FastLED.addLeds<WS2812B,26,GRB>(ledsY[4],258);
+  FastLED.addLeds<WS2812B,19,GRB>(ledsY[5],258);
+
+-------------------------------------------------------------
+4. ADDRESSING: VISUAL LED → BUFFER INDEX
+-------------------------------------------------------------
+
+  FORWARD strips  (visual LED 1 = buffer index base+0):
+    X2, X4, X6, X8, X10, X12   (all even X)
+    Y1, Y3, Y5, Y7, Y9,  Y11   (all odd  Y)
+    bufferIndex = base + (n - 1)
+
+  BACKWARD strips (visual LED 1 = buffer index base+120):
+    X1, X3, X5, X7, X9,  X11   (all odd  X)
+    Y2, Y4, Y6, Y8, Y10, Y12   (all even Y)
+    For odd  X (Section A):   bufferIndex = base + 121 - n
+    For even Y (Section C):   bufferIndex = base + 122 - n
+
+-------------------------------------------------------------
+5. QUICK REFERENCE STRIP TABLE
+-------------------------------------------------------------
+
+  ┌──────┬────────┬─────────┬──────────┬───────────────────────────┐
+  │Visual│  elec  │ Section │Direction │ Formula for LED n (1..121) │
+  ├──────┼────────┼─────────┼──────────┼────────────────────────────┤
+  │ X1   │ledsX[0]│   A     │ BACKWARD │ ledsX[0][121 - n]          │
+  │ X2   │ledsX[0]│   C     │ FORWARD  │ ledsX[0][135 + n]          │
+  │ X3   │ledsX[1]│   A     │ BACKWARD │ ledsX[1][121 - n]          │
+  │ X4   │ledsX[1]│   C     │ FORWARD  │ ledsX[1][135 + n]          │
+  │ X5   │ledsX[2]│   A     │ BACKWARD │ ledsX[2][121 - n]          │
+  │ X6   │ledsX[2]│   C     │ FORWARD  │ ledsX[2][135 + n]          │
+  │ X7   │ledsX[3]│   A     │ BACKWARD │ ledsX[3][121 - n]          │
+  │ X8   │ledsX[3]│   C     │ FORWARD  │ ledsX[3][135 + n]          │
+  │ X9   │ledsX[4]│   A     │ BACKWARD │ ledsX[4][121 - n]          │
+  │ X10  │ledsX[4]│   C     │ FORWARD  │ ledsX[4][135 + n]          │
+  │ X11  │ledsX[5]│   A     │ BACKWARD │ ledsX[5][121 - n]          │
+  │ X12  │ledsX[5]│   C     │ FORWARD  │ ledsX[5][135 + n]          │
+  ├──────┼────────┼─────────┼──────────┼────────────────────────────┤
+  │ Y1   │ledsY[0]│   A     │ FORWARD  │ ledsY[0][n - 1]            │
+  │ Y2   │ledsY[0]│   C     │ BACKWARD │ ledsY[0][258 - n]          │
+  │ Y3   │ledsY[1]│   A     │ FORWARD  │ ledsY[1][n - 1]            │
+  │ Y4   │ledsY[1]│   C     │ BACKWARD │ ledsY[1][258 - n]          │
+  │ Y5   │ledsY[2]│   A     │ FORWARD  │ ledsY[2][n - 1]            │
+  │ Y6   │ledsY[2]│   C     │ BACKWARD │ ledsY[2][258 - n]          │
+  │ Y7   │ledsY[3]│   A     │ FORWARD  │ ledsY[3][n - 1]            │
+  │ Y8   │ledsY[3]│   C     │ BACKWARD │ ledsY[3][258 - n]          │
+  │ Y9   │ledsY[4]│   A     │ FORWARD  │ ledsY[4][n - 1]            │
+  │ Y10  │ledsY[4]│   C     │ BACKWARD │ ledsY[4][258 - n]          │
+  │ Y11  │ledsY[5]│   A     │ FORWARD  │ ledsY[5][n - 1]            │
+  │ Y12  │ledsY[5]│   C     │ BACKWARD │ ledsY[5][258 - n]          │
+  └──────┴────────┴─────────┴──────────┴────────────────────────────┘
+
+-------------------------------------------------------------
+6. HELPER FUNCTION: setLED
+-------------------------------------------------------------
+
+  void setLED(bool isX, int strip, int led, CRGB colour) {
+    // strip: 1..12, led: 1..121
+    int elec   = (strip - 1) / 2;
+    bool isOdd = (strip % 2 == 1);
+    bool forward;
+    int  bufIdx;
+    if (isX) forward = !isOdd;
+    else      forward = isOdd;
+    if (isOdd) {
+      bufIdx = forward ? (led - 1) : (121 - led);
+    } else {
+      bufIdx = forward ? (135 + led) : (258 - led);
+    }
+    if (isX) ledsX[elec][bufIdx] = colour;
+    else      ledsY[elec][bufIdx] = colour;
+  }
+
+Always clear spacers after FastLED.clear():
+  for(int e=0;e<6;e++){
+    ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;
+    ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;
+  }
+
+-------------------------------------------------------------
+7. COORDINATE REFERENCE CONSTANTS
+-------------------------------------------------------------
+
+  #define NUM_ELEC   6
+  #define CENTER     61.0f        // LED center of strip (1..121)
+  #define MAX_DIST   83.0f        // approx max distance from center
+  #define LEDS_PER_STRIP 258
+
+  // X strip positions in world space (-50..+50 range):
+  float X_POS[12] = {-50,-40,-30,-20,-10,0,10,20,30,40,50,60};
+  // (exact values derived from intersection geometry)
+
+  // Y strip positions:
+  float Y_POS[12] = {-50,-40,-30,-20,-10,0,10,20,30,40,50,60};
+
+  // Intersection LED positions on every strip:
+  const int INTS[12] = {10,19,29,38,47,56,66,75,84,93,103,112};
+
+-------------------------------------------------------------
+8. INTERSECTION AND SQUARE GEOMETRY
+-------------------------------------------------------------
+
+The 12 X and 12 Y strips intersect at 144 intersection points.
+Each intersection lies at a fixed LED position on both strips.
+
+Intersection positions (same for both axes):
+  INTS[0]=10, INTS[1]=19, INTS[2]=29, INTS[3]=38, INTS[4]=47,
+  INTS[5]=56, INTS[6]=66, INTS[7]=75, INTS[8]=84, INTS[9]=93,
+  INTS[10]=103, INTS[11]=112
+
+The grid forms 11×11 = 121 squares, numbered 1..121 row by row:
+  Square 1   = top-left     (between X1/X2 and Y1/Y2)
+  Square 121 = bottom-right (between X11/X12 and Y11/Y12)
+  row = (square-1)/11   (0..10)
+  col = (square-1)%11   (0..10)
+
+Square border LEDs:
+  Top/Bottom borders (Y strips row+1, row+2):
+    LEDs INTS[col]+1 .. INTS[col+1]-1
+  Left/Right borders (X strips col+1, col+2):
+    LEDs INTS[row]+1 .. INTS[row+1]-1
+
+Gap sizes between intersections: 8-9 LEDs each.
+
+-------------------------------------------------------------
+9. ANIMATION SYSTEM
+-------------------------------------------------------------
+
+62 animations are implemented (cases 0..61 in switch):
+
+  0:heartbeat        1:binaryRain       2:tectonic
+  3:vortex           4:earthquake       5:dnaHelix
+  6:supernova        7:acidTrip         8:blackHole
+  9:wormhole        10:mitosis         11:solarFlares
+ 12:collider        13:mandala         14:shockwaveChain
+ 15:dualVortex      16:collapsingFunnel 17:pulsar
+ 18:liquidMetal     19:quantumFoam     20:iceCrown
+ 21:deepAbyss       22:coriolisStorm   23:fibonacci
+ 24:crystalFracture 25:aurora          26:lavaLamp
+ 27:nerveSystem     28:gravityLens     29:tidalWave
+ 30:cymatics        31:starfieldWarp   32:magneticField
+ 33:pendulumChaos   34:darkMatter      35:squareTunnel
+ 36:concentricSquares 37:squareRain    38:fourfoldSymmetry
+ 39:diamondPulse    40:checkerboardMelt 41:gameOfLife
+ 42:rotatingCube    43:squareBreathing 44:fractalSquares
+ 45:silk            46:deepBreath      47:sunsetHorizon
+ 48:oilSlick        49:emberGlow       50:depthMap
+ 51:northernMist    52:moltenGold      53:cosmicDust
+ 54:heartglow       55:evolution       56:morph
+ 57:wavePhysics     58:strangeAttractor 59:harmonicResonance
+ 60:neuralFire      61:plasmaLightning
+
+Animation speed:
+  All animations receive a SCALED virtual time:
+    virtualT += frameDt * cfg.animSpeed
+  where cfg.animSpeed ranges 0.1 (slow) to 4.0 (fast).
+  frameDt is the real elapsed ms since last frame.
+  The scaled 'at' and 'dt' are passed to animations.
+  Exception: earthquake (case 4) uses real 't' for
+  strike timing, not 'at'.
+
+-------------------------------------------------------------
+10. PERSISTENT SETTINGS (NVS)
+-------------------------------------------------------------
+
+Both devices use Preferences library with namespace "grid".
+Keys and ranges:
+
+  Key    Type    Range        Default  Description
+  ─────────────────────────────────────────────────────────
+  "anim" int     0..61        0        Current animation index
+  "bri"  uint8   1..255       40       Animation brightness
+  "sbri" uint8   1..255       200      Strobe brightness
+  "son"  uint8   5..200 ms    40       Strobe on-time (ms)
+  "soff" uint8   5..200 ms    40       Strobe off-time (= son)
+  "ssq"  uint8   1..122       30       Strobe square count
+  "spd"  float   0.1..4.0     1.0      Animation speed multiplier
+
+Blackout state is NOT persisted — always starts off.
+Strobe state is NOT persisted — always starts off.
+Settings are saved on every change by both sender and receiver.
+
+=============================================================
+PART 2 — NEOTRELLIS CONTROLLER (DEVICE B)
+=============================================================
+
+-------------------------------------------------------------
+11. HARDWARE
+-------------------------------------------------------------
+
+  Board:    ESP32 WROOM (38-pin)
+  Pad:      Adafruit NeoTrellis 4x4 silicone button grid
+            - 16 capacitive buttons in a 4x4 matrix
+            - Each button has an integrated RGB LED
+            - Communicates via I2C (Wire library)
+            - Library: Adafruit_NeoTrellis.h
+
+  I2C wiring (default):
+    SDA → GPIO 21
+    SCL → GPIO 22
+    (Standard Wire.begin() — no custom pins needed)
+
+  NeoTrellis I2C address: 0x2E (default, hardware set)
+
+-------------------------------------------------------------
+12. BUTTON LAYOUT
+-------------------------------------------------------------
+
+Physical 4x4 grid, numbered 0..15 left-to-right, top-to-bottom:
+
+   ┌────┬────┬────┬────┐
+   │  0 │  1 │  2 │  3 │
+   ├────┼────┼────┼────┤
+   │  4 │  5 │  6 │  7 │
+   ├────┼────┼────┼────┤
+   │  8 │  9 │ 10 │ 11 │
+   ├────┼────┼────┼────┤
+   │ 12 │ 13 │ 14 │ 15 │
+   └────┴────┴────┴────┘
+
+Column colour scheme (idle):
+  Col 0 (0,4,8,12):  YELLOW  — Brightness controls
+  Col 1 (1,5,9,13):  PINK    — Speed/Frequency controls
+  Col 2 (2,6,10,14): ORANGE  — Mode/Count controls
+  Col 3 (3,7):       OFF     — Unused
+  Button 11:         DIM RED — Blackout toggle
+  Button 15:         WHITE   — Strobe (hold)
+
+-------------------------------------------------------------
+13. BUTTON FUNCTIONS
+-------------------------------------------------------------
+
+  ┌────┬──────────────────┬───────────────────────────────────┐
+  │ Btn│ Idle Colour      │ Function                          │
+  ├────┼──────────────────┼───────────────────────────────────┤
+  │  0 │ yellow           │ Animation brightness UP   (+5)    │
+  │  4 │ yellow           │ Animation brightness DOWN  (-5)   │
+  │  8 │ yellow           │ Strobe brightness UP      (+10)   │
+  │ 12 │ yellow           │ Strobe brightness DOWN    (-10)   │
+  ├────┼──────────────────┼───────────────────────────────────┤
+  │  1 │ pink             │ Animation speed UP        (+0.1)  │
+  │  5 │ pink             │ Animation speed DOWN      (-0.1)  │
+  │  9 │ pink             │ Strobe frequency UP (period -2ms) │
+  │ 13 │ pink             │ Strobe frequency DOWN (period+2ms)│
+  ├────┼──────────────────┼───────────────────────────────────┤
+  │  2 │ orange           │ Next animation mode               │
+  │  6 │ orange           │ Previous animation mode           │
+  │ 10 │ orange           │ Strobe squares UP         (+1)    │
+  │ 14 │ orange           │ Strobe squares DOWN       (-1)    │
+  ├────┼──────────────────┼───────────────────────────────────┤
+  │  3 │ OFF (unused)     │ —                                 │
+  │  7 │ OFF (unused)     │ —                                 │
+  ├────┼──────────────────┼───────────────────────────────────┤
+  │ 11 │ dim red          │ Blackout toggle                   │
+  │ 15 │ bright white     │ Strobe (hold to activate)         │
+  └────┴──────────────────┴───────────────────────────────────┘
+
+Hold-to-repeat (all buttons except 2, 6, 11, 15):
+  - 0..500ms:  single fire on press
+  - 500ms..2s: repeat every 80ms
+  - 2s..4s:    repeat every 40ms
+  - 4s+:       repeat every 16ms (fast scroll)
+
+Mode buttons 2 and 6 fire once per press, no repeat.
+Blackout (11) and Strobe (15) are toggle/hold — no repeat.
+
+-------------------------------------------------------------
+14. BUTTON VISUAL FEEDBACK
+-------------------------------------------------------------
+
+  PRESSED (any button):
+    - Dim red C(60,0,0) while held
+    - Exception: button 11 = bright red C(255,0,0)
+    - Exception: button 15 = full white C(255,255,255)
+
+  AT LIMIT (value cannot go further in that direction):
+    - Idle colour switches to bright version:
+        Yellow limit → C(220,220,0)   bright yellow
+        Pink limit   → C(220,0,130)   bright pink
+        Orange limit → C(220,70,0)    bright orange
+    - When held AND at limit: button blinks
+        bright red C(255,0,0) ↔ dim red C(25,0,0)
+        at ~6Hz (167ms period, derived from millis())
+
+  BLACKOUT ACTIVE (button 11 idle, not held):
+    - Blinks C(180,0,0) ↔ C(20,0,0) at ~6Hz
+
+  Pixel rendering: all 16 pixels are rewritten every 20ms
+  immediately after trellis.read(), in a single show() call.
+  No show() is called from callbacks or action handlers.
+  This eliminates flicker from competing show() calls.
+
+-------------------------------------------------------------
+15. BLACKOUT MODE
+-------------------------------------------------------------
+
+  Button 11 — toggle:
+    Press once  → grid goes completely dark, button 11 blinks
+    Press again → grid resumes previous animation
+
+  While in blackout, holding strobe (15) activates strobe.
+  Releasing strobe returns to blackout (not to animation).
+  Blackout is only exited by pressing button 11 again.
+
+  Blackout state is NOT transmitted via NVS — the receiver
+  manages it locally. The sync message includes blackoutActive
+  so the trellis button LED reflects the correct state after
+  a trellis reboot.
+
+-------------------------------------------------------------
+16. STROBE MODE
+-------------------------------------------------------------
+
+  Button 15 — hold to activate, release to stop:
+    While held: grid strobes with random squares
+    Released:   grid returns to previous animation + brightness
+
+  Strobe uses its own brightness (cfg.strobeBrightness),
+  independent of animation brightness.
+
+  Strobe on/off period: cfg.strobeOnMs (= cfg.strobeOffMs)
+    Min: 5ms  Max: 200ms  Default: 40ms
+    Controlled by buttons 9 (faster) and 13 (slower)
+
+  Strobe square count: cfg.strobeSquares
+    Range: 1..121 (random squares) or 122 (full grid all LEDs)
+    Default: 30 squares
+    Controlled by buttons 10 (+1) and 14 (-1)
+    Can be changed WHILE strobe is active
+
+  Strobe saves and restores:
+    preStrobeAnim  — animation index before strobe
+    preStrobeBri   — animation brightness before strobe
+
+=============================================================
+PART 3 — ESP-NOW COMMUNICATION PROTOCOL
+=============================================================
+
+-------------------------------------------------------------
+17. ESP-NOW OVERVIEW
+-------------------------------------------------------------
+
+ESP-NOW is a connectionless Wi-Fi protocol. No router needed.
+Both devices must be in WIFI_STA mode with WiFi.disconnect().
+
+  Sender (NeoTrellis) → Receiver (LED Grid):
+    Sends GridMsg every 100ms (heartbeat) + on every key event
+
+  Receiver (LED Grid) → Sender (NeoTrellis):
+    Sends SyncMsg every 200ms with current settings state
+
+The receiver learns the sender's MAC from the first received
+packet — no hardcoded sender MAC on the receiver side.
+The sender has the receiver MAC hardcoded.
+
+Timeout: if receiver gets no packet for 400ms, it treats
+all buttons as released (prevents stuck strobe/blackout on
+sender disconnect or reset).
+
+-------------------------------------------------------------
+18. MESSAGE STRUCTURES
+-------------------------------------------------------------
+
+Both must be IDENTICAL on sender and receiver (byte-exact):
+
+  // Sender → Receiver (GridMsg)
+  typedef struct {
+    uint16_t heldMask;      // bitmask: bit N = button N held
+    uint8_t  eventBtn;      // which button changed (0..15)
+    bool     eventPressed;  // true=pressed, false=released
+    bool     isEvent;       // true=event, false=heartbeat only
+  } GridMsg;
+
+  // Receiver → Sender (SyncMsg)
+  typedef struct {
+    uint8_t brightness;       // animation brightness 1..255
+    uint8_t strobeBrightness; // strobe brightness 1..255
+    uint8_t strobeOnMs;       // strobe period 5..200ms
+    uint8_t strobeOffMs;      // same as strobeOnMs
+    uint8_t strobeSquares;    // 1..122
+    int     animIndex;        // 0..61
+    float   animSpeed;        // 0.1..4.0
+    bool    blackoutActive;   // current blackout state
+  } SyncMsg;
+
+-------------------------------------------------------------
+19. SENDER ESP-NOW SETUP
+-------------------------------------------------------------
+
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  esp_now_init();
+  esp_now_register_send_cb(onSent);
+  esp_now_register_recv_cb(onReceive);  // for SyncMsg
+
+  // Add receiver as peer:
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, receiverMAC, 6);
+  peer.channel = 0;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
+
+  // On send failure, re-add peer:
+  void onSent(const uint8_t* mac, esp_now_send_status_t s) {
+    if(s != ESP_NOW_SEND_SUCCESS) {
+      esp_now_del_peer(receiverMAC);
+      peerAdded = false;  // ensurePeer() re-adds on next send
+    }
+  }
+
+-------------------------------------------------------------
+20. RECEIVER ESP-NOW SETUP
+-------------------------------------------------------------
+
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  esp_now_init();
+  esp_now_register_recv_cb(onReceive);
+  // Receiver does NOT pre-register sender as peer
+  // Sender MAC is learned from first received packet
+
+  // To send SyncMsg back to sender:
+  // Add sender as peer when first packet arrives:
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, senderMAC, 6);
+  peer.channel = 0;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
+
+-------------------------------------------------------------
+21. RECEIVER BUTTON PROCESSING
+-------------------------------------------------------------
+
+The receiver maintains its own hold-repeat timer state,
+identical to the sender. It does NOT rely on repeat events
+from the sender. The held bitmask from each heartbeat is the
+authoritative truth.
+
+  Logic per frame:
+  1. Read espHeldMask (set by ESP-NOW callback)
+  2. If timeout (>400ms no packet): set held = 0
+  3. Detect rising edges: rising = held & ~prevHeld
+  4. Record press timestamps on rising edges
+  5. For value buttons: fire action on press, then repeat
+     with acceleration based on time held (independent timer)
+  6. Strobe: level-driven by bit 15 of held mask
+  7. Blackout: rising edge of bit 11 toggles state
+  8. Mode buttons (2,6): rising edge only, no repeat,
+     blocked during strobe and blackout
+
+=============================================================
+PART 4 — RULES, CONSTRAINTS & NOTES FOR AI
+=============================================================
+
+-------------------------------------------------------------
+22. ANIMATION CODING RULES
+-------------------------------------------------------------
+
+  - Animations receive (uint32_t at, float dt) — scaled time
+  - 'at' is virtual milliseconds (affected by animSpeed)
+  - 'dt' is virtual ms elapsed since last frame
+  - Exception: earthquake uses real 't' for absolute timing
+  - All animations call FastLED.show() themselves at the end
+  - Spacer LEDs (indices 255,256,257) must be set to BLACK
+    before or after FastLED.clear()
+  - Use setLED(isX, strip, led, colour) for all LED writes
+  - Strip: 1..12, LED: 1..121
+
+  Coordinate system for animation math:
+    float x = X_POS[xi]        for X strip xi (0..11)
+    float y = (float)n - CENTER  for LED n on that strip
+    CENTER = 61.0f (center of 1..121 range)
+    MAX_DIST ≈ 83.0f
+
+  Animation init flags (must be reset in resetAnimState):
+    rainInit, shockInit, novaInit, blobInit, nerveInit,
+    starInit, pendInit, sqRainInit, golInit, evoInit,
+    morphInit, wvInit, lorInit, hrInit, nfInit, plInit
+
+-------------------------------------------------------------
+23. PERFORMANCE NOTES
+-------------------------------------------------------------
+
+  ESP32 WROOM runs at 240MHz (Xtensa LX6 dual-core).
+  FastLED.show() for 12×258 LEDs takes ~9ms.
+  Frame budget: ~20ms target (50fps).
+
+  Expensive operations per LED (cycles):
+    sqrtf:  ~40     atan2f: ~100
+    powf:   ~150    sinf:   ~80
+
+  Preferred fast approximations:
+    sinf(x*PI) for x in 0..1:  use 4*x*(1-x)  (parabola)
+    powf(x,2): use x*x
+    powf(x,3): use x*x*x
+    fmod(x,1): use x-(int)x
+    Triangle wave: x<0.5 ? x*2 : 2-x*2
+
+  Pre-compute per-frame constants (e.g. blob centres) outside
+  the inner LED loop to avoid redundant transcendental calls.
+
+-------------------------------------------------------------
+24. LIBRARIES REQUIRED
+-------------------------------------------------------------
+
+  LED Grid ESP32 (Device A):
+    FastLED         — LED control
+    esp_now.h       — ESP-NOW communication (built-in)
+    WiFi.h          — Wi-Fi stack (built-in)
+    Preferences.h   — NVS persistent storage (built-in)
+
+  NeoTrellis ESP32 (Device B):
+    Adafruit_NeoTrellis  — NeoTrellis driver
+    Adafruit_seesaw      — dependency of NeoTrellis
+    esp_now.h            — ESP-NOW (built-in)
+    WiFi.h               — (built-in)
+    Preferences.h        — NVS (built-in)
+    Wire.h               — I2C (built-in)
+
+-------------------------------------------------------------
+25. MAC ADDRESSES
+-------------------------------------------------------------
+
+  LED Grid ESP32  (Receiver): f4:65:0b:e8:98:60
+  NeoTrellis ESP32 (Sender):  44:1d:64:fa:b0:f8
+
+  In code (sender):
+    uint8_t receiverMAC[] = {0xF4,0x65,0x0B,0xE8,0x98,0x60};
+
+=============================================================
+END OF DOCUMENT (v2.0)
+=============================================================

@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Arduino / arduino-cli build artifacts
+build/
+*.bin
+*.elf
+*.hex
+*.map
+*.d.o
+*.a
+
+# Editors
+.vscode/
+.idea/
+*.swp
