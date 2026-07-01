@@ -21,7 +21,7 @@ void setLED(bool isX, int strip, int led, CRGB colour) {
   int elec=(strip-1)/2; bool isOdd=(strip%2==1); bool forward; int bufIdx;
   if(isX)forward=!isOdd; else forward=isOdd;
   if(isOdd)bufIdx=forward?(led-1):(121-led);
-  else bufIdx=forward?(135+led):(258-led);
+  else bufIdx=forward?(135+led):(257-led);  // even-Y return rows: one more disabled LED at the turn (align)
   if(isX)ledsX[elec][bufIdx]=colour; else ledsY[elec][bufIdx]=colour;
 }
 
