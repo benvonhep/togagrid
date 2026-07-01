@@ -3211,35 +3211,38 @@ void anim_textTOGA(uint32_t at){   anim_scrollBanner("TOGA",  at, 40); }
 void anim_textCASTLE(uint32_t at){ anim_scrollBanner("CASTLE",at,140); }
 void anim_text2026(uint32_t at){   anim_scrollBanner("2026",  at,210); }
 
-// ═══════════ 55. STICK FIGURE (Strichmännchen) walking ═══════════
+// ═══════════ 55. RUNNER (Strichmännchen jump'n'run, Mario-style) ═══════════
 bool stickInit=false;
-static float stkX; static int stkDir;
+#define RUN_OBS 4
+static float rnObsX[RUN_OBS]; static uint8_t rnObsH[RUN_OBS]; static bool rnObsOn[RUN_OBS];
+static float rnJumpH,rnJumpV; static bool rnJumping; static uint32_t rnSpawn;
 void anim_stickman(uint32_t at,float dt){
-  if(!stickInit){ stkX=2.0f; stkDir=1; stickInit=true; }
-  stkX += stkDir*dt*0.0012f;                 // slow walk across
-  if(stkX>9.0f){ stkX=9.0f; stkDir=-1; }
-  if(stkX<2.0f){ stkX=2.0f; stkDir=1; }
-  int C=(int)(stkX+0.5f);                     // body axis (X strip at node col C)
-  bool f=((at/430)&1);                        // slow 2-frame walk cycle
-  CRGB col=CRGB(CHSV(35,180,235));
+  const int RX=2, GND=9;                       // runner column / ground node row
+  if(!stickInit){ for(int i=0;i<RUN_OBS;i++) rnObsOn[i]=false; rnJumpH=0;rnJumpV=0;rnJumping=false; rnSpawn=at; stickInit=true; }
+  // world scrolls: obstacles move left toward the runner
+  for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ rnObsX[i]-=0.006f*dt; if(rnObsX[i]<-1.5f) rnObsOn[i]=false; }
+  if(at-rnSpawn>1500){ rnSpawn=at;
+    for(int i=0;i<RUN_OBS;i++) if(!rnObsOn[i]){ rnObsX[i]=11.5f; rnObsH[i]=1+random(2); rnObsOn[i]=true; break; } }
+  // auto-jump when an obstacle approaches
+  if(!rnJumping) for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ float d=rnObsX[i]-RX; if(d>0.3f&&d<3.0f){ rnJumping=true; rnJumpV=0.017f; rnJumpH=0.01f; break; } }
+  if(rnJumping){ rnJumpH+=rnJumpV*dt; rnJumpV-=0.00005f*dt; if(rnJumpH<=0){ rnJumpH=0; rnJumpV=0; rnJumping=false; } }
+  int F=GND-(int)(rnJumpH+0.5f);                // feet node (rises when jumping)
+  bool f=((at/140)&1);                          // running leg frame
+  CRGB col =CRGB(CHSV(35,180,235));             // runner
+  CRGB gcol=CRGB(CHSV(95,200,110));             // ground
+  CRGB ocol=CRGB(CHSV(8,230,190));              // obstacle
   clearFrame();
-  // head: 2-cell box centred over the axis
-  fillCell(1,C-1,col); fillCell(1,C,col);
-  // torso: vertical line, nodes rows 2..5
-  drawVSeg(2,C,col); drawVSeg(3,C,col); drawVSeg(4,C,col);
-  // arms swing: out on one frame, down on the other
-  if(f){ drawHSeg(3,C-1,col); drawHSeg(3,C,col); }        // arms out
-  else { drawVSeg(3,C-1,col); drawVSeg(3,C+1,col); }      // arms down
-  // hips
-  drawHSeg(5,C-1,col); drawHSeg(5,C,col);
-  // legs stride: leading leg long with a foot, trailing leg short
-  if(f){
-    drawVSeg(5,C-1,col); drawVSeg(6,C-1,col); drawHSeg(7,C-1,col); // left leg forward + foot
-    drawVSeg(5,C+1,col);                                           // right leg back
-  } else {
-    drawVSeg(5,C+1,col); drawVSeg(6,C+1,col); drawHSeg(7,C,col);   // right leg forward + foot
-    drawVSeg(5,C-1,col);                                           // left leg back
-  }
+  for(int c=0;c<11;c++) drawHSeg(GND,c,gcol);   // ground line
+  for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ int ox=(int)(rnObsX[i]+0.5f);
+    for(int h=0;h<rnObsH[i];h++) fillCell(GND-1-h,ox,ocol); }        // obstacles on the ground
+  // ── runner ──
+  int C=RX;
+  fillCell(F-5,C-1,col); fillCell(F-5,C,col);   // head (2-cell box)
+  drawVSeg(F-4,C,col); drawVSeg(F-3,C,col);      // torso
+  if(f) drawHSeg(F-4,C,col); else drawHSeg(F-4,C-1,col);            // pumping arm
+  if(rnJumping){ drawVSeg(F-2,C-1,col); drawVSeg(F-2,C+1,col); }    // legs spread (airborne)
+  else if(f){ drawVSeg(F-2,C-1,col); drawVSeg(F-1,C-1,col); drawVSeg(F-2,C+1,col); } // stride A
+  else      { drawVSeg(F-2,C+1,col); drawVSeg(F-1,C+1,col); drawVSeg(F-2,C-1,col); } // stride B
   FastLED.show();
 }
 
