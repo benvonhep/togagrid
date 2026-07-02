@@ -20,7 +20,7 @@ uint8_t receiverMAC[] = {0xF4,0x65,0x0B,0xE8,0x98,0x60};
 Adafruit_NeoTrellis trellis;
 
 // ── Messages (must match grid_SW.ino) ──
-typedef struct { uint8_t cmd; uint8_t target; int16_t arg; bool strobe; bool modeStrobe; } GridMsg;
+typedef struct { uint8_t cmd; uint8_t target; int16_t arg; bool strobe; bool modeStrobe; bool castleStrobe; } GridMsg;
 typedef struct { uint8_t brightness,strobeBrightness,strobeOnMs,strobeOffMs,strobeSquares;
                  uint8_t hueBase,hueSpeed,strobeHue;
                  uint8_t tintR,tintG,tintB, sColR,sColG,sColB;
@@ -62,7 +62,7 @@ void onReceive(const uint8_t*mac,const uint8_t*data,int len){
   gs.tintR=m.tintR; gs.tintG=m.tintG; gs.tintB=m.tintB; gs.sColR=m.sColR; gs.sColG=m.sColG; gs.sColB=m.sColB;
 }
 void sendCmd(uint8_t cmd,uint8_t target,int16_t arg){
-  ensurePeer(); GridMsg m; m.cmd=cmd; m.target=target; m.arg=arg; m.strobe=btnDown[15]; m.modeStrobe=btnDown[14];
+  ensurePeer(); GridMsg m; m.cmd=cmd; m.target=target; m.arg=arg; m.strobe=btnDown[15]; m.modeStrobe=btnDown[14]; m.castleStrobe=btnDown[13];
   esp_now_send(receiverMAC,(uint8_t*)&m,sizeof(m));
 }
 
@@ -77,7 +77,7 @@ TrellisCallback handleKey(keyEvent evt){
   if(pressed){
     if(isParamBtn(b) && state==ST_ADJUST && activeBtn==b){ enterDefault(); suppressBtn=b; } // tap active param → off
   } else if(b==suppressBtn) suppressBtn=-1;       // released → hold-to-activate allowed again
-  if(b==15||b==14) sendCmd(0,0,0);               // strobe / mode-strobe edge → notify immediately
+  if(b==15||b==14||b==13) sendCmd(0,0,0);        // strobe / mode-strobe / castle-strobe edge → notify immediately
   return 0;
 }
 
@@ -134,6 +134,7 @@ void renderLEDs(uint32_t t){
       if(i==3||i==7)        col=C(0,60,80);        // +/-
       else if(isParamBtn(i)) col=paramCol(i,32);   // each param in its own colour
       else if(i==11)        col=C(40,0,0);         // Beat tap
+      else if(i==13)        col=C(0,45,55);        // Castle-strobe (2nd strobe)
       else if(i==14)        col=C(45,20,45);       // Mode-strobe
       else if(i==15)        col=strobeCol(70);     // Strobe shows its set colour
     }
@@ -141,6 +142,7 @@ void renderLEDs(uint32_t t){
     if(btnDown[i]){
       if(i==15)                     col=strobeCol(255);
       else if(i==14)                col=rgbScale(gs.tintR,gs.tintG,gs.tintB,255);  // mode-strobe flash colour
+      else if(i==13)                col=C(0,140,160);   // castle-strobe held
       else if(!(state==ST_ADJUST && i==activeBtn)) col=C(70,20,0);
     }
     trellis.pixels.setPixelColor(i,col);
