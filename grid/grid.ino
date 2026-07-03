@@ -549,6 +549,12 @@ void loop() {
     case 81: anim_spiralEject(at);         break;
     case 82: anim_clouds3d(at);            break;
     case 83: anim_pulseHeart(at);          break;
+    case 84: anim_rainUp(at);              break;
+    case 85: anim_starsFlying(at);         break;
+    case 86: anim_firework2(at);           break;
+    case 87: anim_hStripesFlow(at);        break;
+    case 88: anim_vuColumns(at);           break;
+    case 89: anim_vuGrid(at);              break;
   }
 
   // ── Mode-change readout: flash the number in the top-right on

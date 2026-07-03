@@ -255,3 +255,85 @@ void anim_pulseHeart(uint32_t at){
     } }
   showGrid();
 }
+// 84 — RAIN UP: droplets flying from bottom to top with soft trails (reverse of RAIN).
+void anim_rainUp(uint32_t at){
+  clearFrame(); float tf=at*0.001f;
+  for(int i=0;i<40;i++){ float x=(fxhash(i*1.9f)-0.5f)*116; float sp=0.5f+fxhash(i*3.3f)*0.6f;
+    float ph=fxfract(tf*sp+fxhash(i*7.7f)); float y=-54.0f+ph*114.0f;      // rise
+    fxStreak(x,y-5.0f,x,y,0.35f,1.0f,CRGB(CHSV(150,120,220))); }           // trail below the head
+  showGrid();
+}
+// 85 — STARS FLYING: stars drifting across in every direction, wrapping, twinkling.
+void anim_starsFlying(uint32_t at){
+  clearFrame(); float tf=at*0.001f;
+  for(int i=0;i<55;i++){ float ang=fxhash(i*1.3f)*6.2832f; float sp=6.0f+fxhash(i*2.7f)*14.0f;
+    float rx=fxhash(i*4.1f)*120.0f-60.0f + cosf(ang)*sp*tf;
+    float ry=fxhash(i*5.9f)*120.0f-60.0f + sinf(ang)*sp*tf;
+    float x=rx-120.0f*floorf((rx+60.0f)/120.0f);                          // wrap into [-60,60)
+    float y=ry-120.0f*floorf((ry+60.0f)/120.0f);
+    float tw=0.5f+0.5f*sinf(tf*3.0f+i);
+    fxSplat(x,y,0.4f+tw*0.35f,1.0f,CRGB(CHSV(150,25,(uint8_t)(110+tw*145)))); }
+  showGrid();
+}
+// 86 — FIREWORK: shells launch, burst into radial sparks that arc down and fade.
+void anim_firework2(uint32_t at){
+  clearFrame(); float tf=at*0.001f;
+  for(int s=0;s<4;s++){
+    float period=2.2f+fxhash(s*3.1f)*1.5f;
+    float ph=fxfract((tf+fxhash(s*7.3f)*period)/period);
+    float bx=(fxhash(s*2.1f)-0.5f)*80.0f, by=10.0f+fxhash(s*5.5f)*30.0f;  // burst point (+y = up)
+    uint8_t hue=(uint8_t)(fxhash(s*9.9f)*255);
+    if(ph<0.30f){                                                        // rocket rising
+      float ry=-55.0f+(ph/0.30f)*(by+55.0f);
+      fxSplat(bx,ry,0.7f,1.0f,CRGB(CHSV(40,120,255)));
+      fxStreak(bx,ry-6.0f,bx,ry,0.4f,1.0f,CRGB(CHSV(30,180,140)));
+    } else {                                                             // explosion
+      float e=(ph-0.30f)/0.70f, fade=1.0f-e;
+      for(int p=0;p<24;p++){ float pa=p*0.2618f+fxhash(s*13.0f);
+        float spd=18.0f+fxhash(s*100.0f+p*1.0f)*10.0f;
+        float px=bx+cosf(pa)*spd*e, py=by+sinf(pa)*spd*e-14.0f*e*e;      // gravity
+        fxSplat(px,py,0.5f,1.0f,CRGB(CHSV(hue,200,(uint8_t)(fade*fade*255)))); }
+    }
+  }
+  showGrid();
+}
+// 87 — HORIZONTAL STRIPES: crisp bands flowing upward across the whole grid.
+void anim_hStripesFlow(uint32_t at){
+  clearFrame(); float tf=at*0.001f;
+  const float period=18.0f, aa=1.2f, on=period*0.55f;      // stripe repeat, ~1-LED edge, 55% duty
+  for(int pass=0;pass<2;pass++) for(int s=0;s<12;s++){ float base=pass?Y_POS[s]:X_POS[s];
+    for(int n=1;n<=121;n++){ float other=(float)n-CENTER; float y=pass?base:other;
+      float p=y-tf*22.0f; float m=p-period*floorf(p/period);          // position within one period (0..period)
+      float f=constrain(m/aa,0.0f,1.0f)*constrain((on-m)/aa,0.0f,1.0f); // hard band, 1-LED ramp at both edges
+      if(f>0.03f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(150+(uint8_t)(8.0f*sinf(y*0.05f)),210,255)),f);
+    } }
+  showGrid();
+}
+// 88 — VU BARS: each vertical strip is a music level bar (green→red), jumping to a beat.
+void anim_vuColumns(uint32_t at){
+  clearFrame(); float tf=at*0.001f; int beat=(int)floorf(tf*2.4f); float decay=1.0f-fxfract(tf*2.4f);
+  for(int xi=0;xi<12;xi++){
+    float lvl=constrain(0.2f+0.32f*(0.5f+0.5f*sinf(tf*2.5f+xi*0.8f))+0.6f*fxhash(xi*2.3f+beat*1.7f)*decay,0.05f,1.0f);
+    float topY=-60.0f+lvl*120.0f;
+    for(int n=1;n<=121;n++){ float y=(float)n-CENTER; if(y>topY)continue; float frac=(y+60.0f)/120.0f;
+      fxAdd(true,xi+1,n,CRGB(CHSV((uint8_t)(96*(1.0f-frac)),230,255)),(topY-y<5.0f)?1.0f:0.7f); }
+  }
+  showGrid();
+}
+// 89 — VU GRID: vertical bars (rise from bottom) + horizontal bars (grow from left) together.
+void anim_vuGrid(uint32_t at){
+  clearFrame(); float tf=at*0.001f; int beat=(int)floorf(tf*2.4f); float decay=1.0f-fxfract(tf*2.4f);
+  for(int xi=0;xi<12;xi++){
+    float lvl=constrain(0.2f+0.3f*(0.5f+0.5f*sinf(tf*2.5f+xi*0.8f))+0.6f*fxhash(xi*2.3f+beat*1.7f)*decay,0.05f,1.0f);
+    float topY=-60.0f+lvl*120.0f;
+    for(int n=1;n<=121;n++){ float y=(float)n-CENTER; if(y>topY)continue; float frac=(y+60.0f)/120.0f;
+      fxAdd(true,xi+1,n,CRGB(CHSV((uint8_t)(96*(1.0f-frac)),230,255)),(topY-y<5.0f)?1.0f:0.65f); }
+  }
+  for(int yi=0;yi<12;yi++){
+    float lvl=constrain(0.2f+0.3f*(0.5f+0.5f*cosf(tf*2.3f+yi*0.7f))+0.6f*fxhash(yi*3.1f+beat*2.9f)*decay,0.05f,1.0f);
+    float rightX=-60.0f+lvl*120.0f;
+    for(int n=1;n<=121;n++){ float x=(float)n-CENTER; if(x>rightX)continue; float frac=(x+60.0f)/120.0f;
+      fxAdd(false,yi+1,n,CRGB(CHSV((uint8_t)(160+64*(1.0f-frac)),230,255)),(rightX-x<5.0f)?1.0f:0.65f); }
+  }
+  showGrid();
+}
