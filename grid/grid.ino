@@ -43,6 +43,11 @@ uint8_t gHueBase=0, gHueAuto=0, gHueSpeed=0, gStrobeHue=0;
 uint8_t gBaseBri=40;     // per-frame base brightness the AGC multiplies (set by loop)
 float   gAgcGain=1.0f;   // smoothed AGC gain
 bool    gAgcSnap=false;  // snap gain straight to target next frame (set on mode change)
+// ── Beat-Glow: tapped tempo pulses the whole frame (does NOT touch animSpeed) ──
+float   gBeatPeriod=0.0f;  // current beat period in ms (0 = glow off)
+float   gBeatTarget=0.0f;  // newly tapped period; gBeatPeriod ramps toward it
+float   gBeatPhase =0.0f;  // 0..1 position within the current beat
+float   gBeatGlow  =1.0f;  // brightness multiplier from the beat pulse
 // Central show: rotates every lit pixel's hue by (base+auto), measures total light for
 // the AGC, sets the normalized brightness, then pushes to LEDs.
 void showGrid(){
@@ -60,7 +65,7 @@ void showGrid(){
   float gainTarget=constrain(AGC_TARGET/fmaxf(avg,1.0f),AGC_MIN,AGC_MAX);
   if(gAgcSnap){ gAgcGain=gainTarget; gAgcSnap=false; }           // instant on mode change
   else         gAgcGain+=(gainTarget-gAgcGain)*AGC_K;            // else slow-smooth
-  FastLED.setBrightness((uint8_t)constrain((int)lroundf(gBaseBri*gAgcGain),1,MAX_BRIGHTNESS));
+  FastLED.setBrightness((uint8_t)constrain((int)lroundf(gBaseBri*gAgcGain*gBeatGlow),1,MAX_BRIGHTNESS));
   FastLED.show();
 }
 
@@ -183,7 +188,9 @@ struct Settings {
   uint8_t strobeOnMs;
   uint8_t strobeOffMs;
   uint8_t strobeSquares;
+  uint8_t strobeGapMs;    // button-15 strobe: gap between flashes (hold 15 + +/-)
   float   animSpeed;      // 0.1..4.0, 1.0=normal
+  uint16_t beatMs;        // tapped beat period for the glow, 0 = off
 };
 Settings cfg;
 
@@ -196,7 +203,9 @@ void saveSettings() {
   prefs.putUChar("son",  cfg.strobeOnMs);
   prefs.putUChar("soff", cfg.strobeOffMs);
   prefs.putUChar("ssq",  cfg.strobeSquares);
+  prefs.putUChar("sgap", cfg.strobeGapMs);
   prefs.putFloat("spd",  cfg.animSpeed);
+  prefs.putUShort("beat", cfg.beatMs);        // beat-glow tempo
   prefs.putUChar("hue",  gHueBase);
   prefs.putUChar("hspd", gHueSpeed);
   prefs.putUChar("shue", gStrobeHue);
@@ -213,7 +222,9 @@ void loadSettings() {
   cfg.strobeOnMs       = prefs.getUChar("son",  40);
   cfg.strobeOffMs      = prefs.getUChar("soff", 40);
   cfg.strobeSquares    = prefs.getUChar("ssq",  30);
+  cfg.strobeGapMs      = prefs.getUChar("sgap", STROBE_GAP_DEF);
   cfg.animSpeed        = prefs.getFloat("spd",  1.0f);
+  cfg.beatMs           = prefs.getUShort("beat", 0);
   gHueBase             = prefs.getUChar("hue",  0);
   gHueSpeed            = prefs.getUChar("hspd", 0);
   gStrobeHue           = prefs.getUChar("shue", 0);
@@ -227,7 +238,11 @@ void loadSettings() {
   cfg.strobeOnMs       = constrain(cfg.strobeOnMs, 5, 200);
   cfg.strobeOffMs      = constrain(cfg.strobeOffMs, 5, 200);
   cfg.strobeSquares    = constrain(cfg.strobeSquares, 1, 122);
+  cfg.strobeGapMs      = constrain(cfg.strobeGapMs, STROBE_GAP_MIN, STROBE_GAP_MAX);
   cfg.animSpeed        = constrain(cfg.animSpeed, 0.1f, 4.0f);
+  // Beat-glow tempo: 0 stays off, otherwise clamp to a sane range and start the clock.
+  if(cfg.beatMs){ cfg.beatMs=constrain(cfg.beatMs,BEAT_MIN_MS,BEAT_MAX_MS);
+                  gBeatPeriod=gBeatTarget=(float)cfg.beatMs; }
 }
 #define STUN_N 18
 #define RRIP_N 7
@@ -304,10 +319,15 @@ void applyCommand(const GridMsg& m, uint32_t t){
       case 2: gHueBase  =(uint8_t)(gHueBase  +d*6); break;   // Color (wraps)
       case 3: gStrobeHue=(uint8_t)(gStrobeHue+d*6); break;   // Strobe colour (wraps)
       case 4: gHueSpeed =(uint8_t)constrain((int)gHueSpeed+d,0,40); break; // Hue speed
+      case 5: cfg.strobeGapMs=(uint8_t)constrain((int)cfg.strobeGapMs+d*STROBE_GAP_STEP,
+                                                 STROBE_GAP_MIN,STROBE_GAP_MAX); break; // gap between flashes
     }
     saveSettings();
-  } else if(m.cmd==3){                              // tap-tempo: set absolute speed
-    cfg.animSpeed=constrain(m.arg/1000.0f,0.1f,4.0f); saveSettings();
+  } else if(m.cmd==3){                              // tap-tempo → beat-glow period in ms (NOT speed)
+    int per=constrain((int)m.arg,BEAT_MIN_MS,BEAT_MAX_MS);
+    gBeatTarget=(float)per;                         // ramped toward in loop(), never jumps
+    if(gBeatPeriod<=0.0f) gBeatPeriod=gBeatTarget;  // very first tempo: adopt straight away
+    cfg.beatMs=(uint16_t)per; saveSettings();
   }
 }
 
@@ -347,7 +367,9 @@ void loop() {
     applyCommand(m,t);
   }
 
-  if(t-lastFrame<20)return;
+  // 50 FPS cap for animations — but the strobe must run at full loop rate, else its
+  // timing is quantised to 20ms and the flash can never be short (that was the bug).
+  if(!strobeActive && t-lastFrame<20) return;
   lastFrame=t;
 
   // Accumulate scaled animation time
@@ -356,6 +378,15 @@ void loop() {
   if(lastAnimT==0) lastAnimT=t;
   float frameDt = (float)(t - lastAnimT);
   lastAnimT = t;
+
+  // ── Beat-Glow: pulse the frame in the tapped rhythm. Uses REAL time (not
+  //    animSpeed), and eases toward a newly tapped tempo instead of jumping.
+  if(gBeatPeriod>0.0f){
+    gBeatPeriod += (gBeatTarget-gBeatPeriod)*BEAT_RAMP;   // graduell erhöht/verringert
+    gBeatPhase  += frameDt/gBeatPeriod;
+    gBeatPhase  -= floorf(gBeatPhase);                    // wrap 0..1, phase stays continuous
+    gBeatGlow    = BEAT_MIN+(1.0f-BEAT_MIN)*expf(-gBeatPhase*BEAT_DECAY);
+  } else gBeatGlow=1.0f;
   static float virtualT = 0.0f;
   virtualT += frameDt * cfg.animSpeed;
   uint32_t at = (uint32_t)virtualT;
@@ -399,7 +430,8 @@ void loop() {
   if(strobeActive){
     if(t>strobeFlip){
       strobeOn=!strobeOn;
-      strobeFlip=t+(uint32_t)(strobeOn?cfg.strobeOnMs:cfg.strobeOffMs);
+      // Short fixed flash, user-tunable gap (hold 15 + press +/-).
+      strobeFlip=t+(uint32_t)(strobeOn?STROBE_FLASH_MS:cfg.strobeGapMs);
       if(strobeOn){
         CRGB sc = gStrobeHue==0 ? CRGB(CRGB::White) : CRGB(CHSV(gStrobeHue,255,255));  // Strobe colour (0 = white)
         FastLED.setBrightness(cfg.strobeBrightness);

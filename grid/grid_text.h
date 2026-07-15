@@ -140,9 +140,11 @@ void triggerOverlay(uint32_t t,int idx){
   overlayUntil=t+500;        // number flashes ~0.5s, top-right, over the animation
 }
 // Draw the mode number small in the top-right (rows 0..2), on top of the frame.
+// Plain, slightly dimmed white — drawn after showGrid(), so the global hue
+// rotation never tints it. Tune NUM_WHITE if it reads too bright/dim.
+#define NUM_WHITE 150
 void drawNumberTopRight(uint32_t t){
   int w=textLenNodes(overlayNum);           // node-cols (3 per digit incl. gap)
   int leftC=11-w; if(leftC<0) leftC=0;       // right-aligned, ~1 node margin
-  CRGB col=CRGB(CHSV((uint8_t)(t/16),210,235));
-  drawTextCells(overlayNum,leftC,0,col);
+  drawTextCells(overlayNum,leftC,0,CRGB(NUM_WHITE,NUM_WHITE,NUM_WHITE));
 }

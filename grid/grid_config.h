@@ -42,10 +42,25 @@
 #define AGC_MAX     1.5f     // clamp: how far a sparse mode can be lifted
 #define AGC_K       0.05f    // smoothing per frame (~0.4s); preserves intended pulses
 
+// ── Beat-Glow (tap-tempo pulse laid over the animations) ──
+#define BEAT_MIN    0.45f   // dimmest point between beats (1.0 = no pulse at all)
+#define BEAT_DECAY  3.5f    // pulse shape: higher = snappier flash, lower = softer breathing
+#define BEAT_RAMP   0.02f   // how gradually a newly tapped tempo is adopted (~1 s)
+#define BEAT_MIN_MS 200     // fastest accepted beat (300 BPM)
+#define BEAT_MAX_MS 3000    // slowest accepted beat (20 BPM)
+
 // ── Strobe / controller input steps & timing ──
 #define STROBE_BRI_STEP   10
 #define STROBE_FREQ_STEP   2
 #define STROBE_SQ_STEP     1
+// Button-15 strobe: flash as short as the LED refresh allows, gap is user-tunable
+// (hold 15 + press +/-). A full FastLED.show() of all 12 strips takes ~10-15ms,
+// so the flash cannot physically get much shorter than STROBE_FLASH_MS.
+#define STROBE_FLASH_MS   10   // fixed, minimal flash length
+#define STROBE_GAP_DEF    90   // default gap between flashes (ms)
+#define STROBE_GAP_MIN    30   // shortest gap  (~fastest strobe)
+#define STROBE_GAP_MAX   250   // longest gap   (~slowest strobe)
+#define STROBE_GAP_STEP    5   // +/- step size
 #define HEARTBEAT_TIMEOUT 400  // ms; sender considered gone after this
 #define REPEAT_DELAY      500  // ms before key auto-repeat
 #define REPEAT_RATE        80  // ms between repeats

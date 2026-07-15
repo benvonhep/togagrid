@@ -5,8 +5,10 @@
 //  Hold a param button 2s → ADJUST that param (it blinks, all others
 //    black except +/−; +/− then change only that param w/ accel).
 //  3s of no +/− activity → back to DEFAULT.
-//  Beat tap (11): tap-tempo → global animSpeed. Exits on 3s idle.
-//  Strobe (15): momentary while held.
+//  Beat match (11): hold 2s to arm (blinks), then tap the beat. 2s after the
+//    last tap the tempo is sent → glow pulse on the grid. Speed is untouched.
+//  Strobe (15): momentary while held. Hold 15 + press +/- → tune the gap
+//    between flashes (the flash itself is fixed at its shortest).
 //
 //  Params:  4 Helligkeit · 8 Speed · 12 Color · 1 Strobe-colour · 5 Hue-speed
 // ═══════════════════════════════════════════════════════
@@ -34,6 +36,7 @@ struct { uint8_t brightness; float animSpeed; uint8_t hueBase,hueSpeed,strobeHue
          uint8_t tintR,tintG,tintB, sColR,sColG,sColB; } gs = {40,1.0f,0,0,0, 255,0,0, 200,200,200};
 
 // ── Button map ──
+#define PARAM_STROBE_GAP 5           // not a param button: hold strobe (15) + press +/-
 // param button → target id (0=BRI 1=SPEED 2=COLOR 3=STROBEHUE 4=HUESPEED)
 int paramTarget(int b){ switch(b){case 4:return 0;case 8:return 1;case 12:return 2;case 1:return 3;case 5:return 4;} return -1; }
 bool isParamBtn(int b){ return paramTarget(b)>=0; }
@@ -47,7 +50,7 @@ int  suppressBtn=-1;                 // button that just deactivated a param (ig
 uint32_t lastActivity=0;
 uint32_t plusPressT=0,minusPressT=0,plusRepT=0,minusRepT=0;
 
-#define MAX_TAPS 5
+#define MAX_TAPS 8       // taps averaged per sequence (rolling window)
 uint32_t taps[MAX_TAPS]={}; int tapCount=0;
 
 uint32_t C(uint8_t r,uint8_t g,uint8_t b){ return trellis.pixels.Color(r,g,b); }
@@ -68,7 +71,33 @@ void sendCmd(uint8_t cmd,uint8_t target,int16_t arg){
 
 void enterDefault(){ state=ST_DEFAULT; activeBtn=-1; activeTarget=-1; tapCount=0; }
 void enterAdjust(int b){ state=ST_ADJUST; activeBtn=b; activeTarget=paramTarget(b); lastActivity=millis(); }
-void enterTap(){ state=ST_TAP; tapCount=0; lastActivity=millis(); }
+// ── Beat match (button 11) ──
+// Hold 11 for HOLD_TO_SELECT to ARM (button blinks), then tap the beat. Taps only
+// count while armed, so nothing changes by accident — and the arming press itself
+// is never counted (it happened before the state flipped to ST_TAP).
+// Taps are stamped in the key callback with the exact press time, so fast taps are
+// never dropped. The tempo does NOT change the animation speed: TAP_FINALIZE_MS
+// after the LAST tap the whole sequence is evaluated once and sent to the grid,
+// where it drives a glow pulse (the grid eases into the new tempo, no jump).
+#define TAP_FINALIZE_MS 2000
+#define BEAT_MIN_MS     200          // 300 BPM
+#define BEAT_MAX_MS     3000         // 20 BPM
+void enterTap(){ state=ST_TAP; tapCount=0; lastActivity=millis(); }   // armed, waiting for taps
+void onBeatTap(uint32_t now){
+  if(tapCount>0 && (now-taps[tapCount-1])>TAP_FINALIZE_MS) tapCount=0;  // stale → new sequence
+  if(tapCount<MAX_TAPS) taps[tapCount++]=now;
+  else { for(int i=1;i<MAX_TAPS;i++) taps[i-1]=taps[i]; taps[MAX_TAPS-1]=now; }
+  lastActivity=now;
+}
+// Sequence finished (2s of silence): average every interval up to the last tap.
+void finalizeBeatTaps(){
+  if(tapCount>=2){
+    uint32_t sum=0; for(int i=1;i<tapCount;i++) sum+=taps[i]-taps[i-1];
+    float avg=(float)sum/(tapCount-1);                // ms per beat over the whole sequence
+    if(avg>=BEAT_MIN_MS && avg<=BEAT_MAX_MS) sendCmd(3,0,(int16_t)avg);
+  }
+  tapCount=0;
+}
 
 // ── Trellis key callback ──
 TrellisCallback handleKey(keyEvent evt){
@@ -76,6 +105,7 @@ TrellisCallback handleKey(keyEvent evt){
   btnDown[b]=pressed; if(pressed) btnDownT[b]=millis();
   if(pressed){
     if(isParamBtn(b) && state==ST_ADJUST && activeBtn==b){ enterDefault(); suppressBtn=b; } // tap active param → off
+    if(b==11 && state==ST_TAP) onBeatTap(btnDownT[b]);  // only counts once armed; never drops a fast tap
   } else if(b==suppressBtn) suppressBtn=-1;       // released → hold-to-activate allowed again
   if(b==15||b==14||b==13) sendCmd(0,0,0);        // strobe / mode-strobe / castle-strobe edge → notify immediately
   return 0;
@@ -167,7 +197,7 @@ void setup(){
 
 void loop(){
   static uint32_t lastPoll=0,lastHB=0;
-  static bool prevTap=false, prevPlus=false, prevMinus=false;
+  static bool prevPlus=false, prevMinus=false;
   uint32_t t=millis();
 
   if(t-lastHB>=100){ lastHB=t; sendCmd(0,0,0); }   // heartbeat (carries strobe state)
@@ -183,25 +213,21 @@ void loop(){
     if(btnDown[b] && (t-btnDownT[b])>=HOLD_TO_SELECT && !(state==ST_ADJUST && activeBtn==b)) enterAdjust(b);
   }
 
-  // ── Beat matcher: hold 11 for 3s to arm, then tap the beat ──
-  if(btnDown[11] && (t-btnDownT[11])>=3000 && state!=ST_TAP){ enterTap(); lastActivity=t; }
-  if(state==ST_TAP && btnDown[11] && !prevTap){        // a fresh tap (the arming hold isn't counted)
-    if(tapCount<MAX_TAPS) taps[tapCount++]=t;
-    else { for(int i=1;i<MAX_TAPS;i++) taps[i-1]=taps[i]; taps[MAX_TAPS-1]=t; }
-    lastActivity=t;
-    if(tapCount>=2){
-      uint32_t sum=0; for(int i=1;i<tapCount;i++) sum+=taps[i]-taps[i-1];
-      float avg=(float)sum/(tapCount-1);              // ms per beat
-      float sp=(60000.0f/avg)/120.0f;                 // 120 BPM = speed 1.0
-      if(sp<0.1f)sp=0.1f; if(sp>4.0f)sp=4.0f;
-      sendCmd(3,0,(int16_t)(sp*1000));                // store tempo (persists; final one stays after 3s idle)
-    }
+  // ── Beat match: hold 11 for 2s to arm, then tap. Taps land in handleKey;
+  //    2s after the last tap the sequence is evaluated once and sent. ──
+  if(btnDown[11] && (t-btnDownT[11])>=HOLD_TO_SELECT && state!=ST_TAP) enterTap();
+  if(state==ST_TAP && tapCount>0 && (t-taps[tapCount-1])>=TAP_FINALIZE_MS){
+    finalizeBeatTaps(); enterDefault();
   }
-  prevTap=btnDown[11];
 
   // ── +/- ──
   bool plus=btnDown[3], minus=btnDown[7];
-  if(state==ST_DEFAULT){
+  if(btnDown[15]){                                  // strobe held → +/- tune the gap between flashes
+    if(plus && !prevPlus){ plusPressT=t; plusRepT=t; sendCmd(2,PARAM_STROBE_GAP,+1); }
+    else if(plus){ if(t-plusPressT>=400 && t-plusRepT>=60){ plusRepT=t; sendCmd(2,PARAM_STROBE_GAP,+1); } }
+    if(minus && !prevMinus){ minusPressT=t; minusRepT=t; sendCmd(2,PARAM_STROBE_GAP,-1); }
+    else if(minus){ if(t-minusPressT>=400 && t-minusRepT>=60){ minusRepT=t; sendCmd(2,PARAM_STROBE_GAP,-1); } }
+  } else if(state==ST_DEFAULT){
     if(plus  && !prevPlus)  sendCmd(1,0,+1);        // next mode
     if(minus && !prevMinus) sendCmd(1,0,-1);        // prev mode
   } else if(state==ST_ADJUST){
