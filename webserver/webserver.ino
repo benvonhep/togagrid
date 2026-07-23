@@ -41,6 +41,10 @@ struct ModEntry {
   uint32_t uptimeS;
   uint16_t battMv;               // cell mV, 0 = unknown/none
   uint8_t  battFlags;            // TOGA_BATT_F_ENABLED / _LOW
+  uint8_t  followMask;           // TOGA_FOLLOW_* — which grid functions the module slaves to
+  uint8_t  gap;                  // output gap: 1 = every LED, N = light every Nth
+  uint8_t  floor;                // floor-strip flow: 0 off, 1 fwd, 2 rev
+  char     name[16];             // user label (module-side, echoed in its hello)
   uint32_t lastSeen;             // millis() on THIS node
 };
 ModEntry mods[MAX_MODULES];
@@ -101,6 +105,10 @@ void drainHellos(uint32_t t) {
     e->gain  = m.gain;  e->pin = m.pin; e->linkAlive = m.linkAlive;
     e->w = m.width; e->h = m.height; e->uptimeS = m.uptimeS;
     e->battMv = m.battMv; e->battFlags = m.battFlags;
+    e->followMask = m.followMask;
+    e->gap = m.gap;
+    e->floor = m.floorFlow;
+    memcpy(e->name, m.name, sizeof(e->name)); e->name[sizeof(e->name) - 1] = 0;
     e->lastSeen = t;
   }
   for (int i = 0; i < MAX_MODULES; i++)                       // long-gone rows expire
@@ -120,11 +128,15 @@ bool parseMac(const String& s, uint8_t out[6]) {
 
 // ── Send settings to ONE module ───────────────────────
 uint16_t txSeq = 0;
-void sendModCfg(const uint8_t mac[6], uint8_t effectPin, uint8_t gain, uint8_t battMon = TOGA_CFG_KEEP) {
+void sendModCfg(const uint8_t mac[6], uint8_t effectPin, uint8_t gain, uint8_t battMon = TOGA_CFG_KEEP,
+                uint8_t followMask = TOGA_FOLLOW_KEEP, uint16_t ledCount = 0, const char* name = nullptr,
+                uint8_t gap = TOGA_GAP_KEEP, uint8_t floorFlow = TOGA_FLOOR_KEEP) {
   TogaModCfgMsg m = {};
   togaInitHeader(m.h, TOGA_MSG_MODCFG, TOGA_GROUP_ALL, ++txSeq);
   memcpy(m.mac, mac, 6);
   m.effectPin = effectPin; m.gain = gain; m.battMon = battMon;
+  m.followMask = followMask; m.ledCount = ledCount; m.gap = gap; m.floorFlow = floorFlow;
+  if (name && name[0]) strncpy(m.name, name, sizeof(m.name) - 1);   // m is zero-init → NUL kept; "" = keep
   // Broadcast is unacked and never retried, so send it 3x. Unlike a +1 step
   // these are absolute values — applying the same one twice is a no-op, which
   // is why the repeats need no dedup on the module side.
@@ -133,6 +145,18 @@ void sendModCfg(const uint8_t mac[6], uint8_t effectPin, uint8_t gain, uint8_t b
 
 // ── HTTP ──────────────────────────────────────────────
 bool channelOk() { return WiFi.channel() == TOGA_CHANNEL; }
+
+// Minimal JSON string escaper for the user-set name. handleSet() already strips
+// names to a safe charset, so this only guards against a module reporting junk.
+String jsonEsc(const char* s) {
+  String o;
+  for (const char* p = s; *p; p++) {
+    char c = *p;
+    if (c == '"' || c == '\\') { o += '\\'; o += c; }
+    else if ((uint8_t)c >= 0x20) o += c;   // drop control chars
+  }
+  return o;
+}
 
 void handleModules() {
   uint32_t t = millis();
@@ -157,6 +181,10 @@ void handleModules() {
          ",\"gain\":" + String(mods[i].gain) +
          ",\"pin\":" + String(mods[i].pin) +
          ",\"w\":" + String(mods[i].w) + ",\"h\":" + String(mods[i].h) +
+         ",\"name\":\"" + jsonEsc(mods[i].name) + "\"" +
+         ",\"follow\":" + String(mods[i].followMask) +
+         ",\"gap\":" + String(mods[i].gap) +
+         ",\"floor\":" + String(mods[i].floor) +
          ",\"link\":" + String(mods[i].linkAlive ? "true" : "false") +
          ",\"batt\":" + String(mods[i].battMv / 1000.0, 2) +
          ",\"bmon\":" + String((mods[i].battFlags & TOGA_BATT_F_ENABLED) ? "true" : "false") +
@@ -175,7 +203,7 @@ void handleSet() {
   uint8_t eff = TOGA_CFG_KEEP, gain = 0, battMon = TOGA_CFG_KEEP;  // 0 / KEEP = "leave this one alone"
   if (server.hasArg("effect")) {
     int e = server.arg("effect").toInt();
-    bool ok = (e >= 0 && e < TOGA_EFFECT_COUNT) || e == TOGA_EFFECT_OFF || e == TOGA_EFFECT_FOLLOW;
+    bool ok = (e >= 0 && e < TOGA_EFFECT_COUNT) || e == TOGA_EFFECT_OFF || e == TOGA_EFFECT_FOLLOW || e == TOGA_EFFECT_IDENTIFY;
     if (!ok) { server.send(400, "text/plain", "bad effect"); return; }
     eff = (uint8_t)e;
   }
@@ -185,7 +213,42 @@ void handleSet() {
     gain = (uint8_t)g;
   }
   if (server.hasArg("bmon")) battMon = server.arg("bmon").toInt() ? 1 : 0;
-  sendModCfg(mac, eff, gain, battMon);
+
+  uint8_t  follow = TOGA_FOLLOW_KEEP;
+  uint16_t leds   = 0;
+  char     name[16] = {0};
+  if (server.hasArg("follow")) {
+    int f = server.arg("follow").toInt();
+    if (f < 0 || f > TOGA_FOLLOW_ALL) { server.send(400, "text/plain", "bad follow"); return; }
+    follow = (uint8_t)f;
+  }
+  if (server.hasArg("leds")) {
+    int n = server.arg("leds").toInt();
+    if (n < 1 || n > 512) { server.send(400, "text/plain", "bad leds"); return; }   // module re-clamps to its MAX_LEDS
+    leds = (uint16_t)n;
+  }
+  uint8_t gap = TOGA_GAP_KEEP;
+  if (server.hasArg("gap")) {                          // 1 = every LED (off), N = light every Nth
+    int g = server.arg("gap").toInt();
+    if (g < TOGA_GAP_OFF || g > TOGA_GAP_MAX) { server.send(400, "text/plain", "bad gap"); return; }
+    gap = (uint8_t)g;
+  }
+  uint8_t floor = TOGA_FLOOR_KEEP;
+  if (server.hasArg("floor")) {                        // 0 off, 1 fwd, 2 rev
+    int f = server.arg("floor").toInt();
+    if (f < TOGA_FLOOR_OFF || f > TOGA_FLOOR_MAX) { server.send(400, "text/plain", "bad floor"); return; }
+    floor = (uint8_t)f;
+  }
+  if (server.hasArg("name")) {                       // sanitize to a safe, JSON-trivial charset
+    String s = server.arg("name"); int j = 0;
+    for (int i = 0; i < (int)s.length() && j < 15; i++) {
+      char c = s[i];
+      if (isalnum((int)c) || c == ' ' || c == '-' || c == '_') name[j++] = c;
+    }
+    name[j] = 0;
+    if (j == 0) { server.send(400, "text/plain", "bad name"); return; }
+  }
+  sendModCfg(mac, eff, gain, battMon, follow, leds, name, gap, floor);
   // Deliberately no optimistic echo: the row updates when the module's next
   // hello confirms it actually took. The UI must show what IS, not what we hope.
   server.send(200, "application/json", "{\"sent\":true}");
@@ -214,39 +277,108 @@ h1{font-size:17px;margin:0 0 10px}
 .mac{font-family:ui-monospace,monospace;font-size:13px}
 .meta{color:#8a8a8a;font-size:12px;margin:3px 0 8px}
 .row{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
-select,input[type=range]{background:#2a2a2a;color:#eee;border:1px solid #3a3a3a;border-radius:5px;padding:5px}
+select,input[type=range],input[type=text],input[type=number]{background:#2a2a2a;color:#eee;border:1px solid #3a3a3a;border-radius:5px;padding:5px}
 input[type=range]{padding:0;flex:1;min-width:120px}
+input[type=number]{width:74px}
+.nm{font-size:15px;font-weight:600;min-width:110px;flex:1}
+.slave{gap:14px}
+.slave label{min-width:auto;color:#cfcfcf;display:inline-flex;align-items:center;gap:4px}
+.hint{font-size:11px;color:#7a7a7a}
 label{font-size:12px;color:#8a8a8a;min-width:52px}
 .pill{font-size:11px;padding:2px 6px;border-radius:9px;background:#2c2c2c;color:#9a9a9a}
 .empty{color:#8a8a8a;padding:20px 0;line-height:1.5}
 button{background:#2a2a2a;color:#eee;border:1px solid #3a3a3a;border-radius:5px;padding:5px 9px;font:inherit;font-size:12px;cursor:pointer}
 button:hover{background:#3a3a3a}
 .ota{margin-left:auto}
+.idf{margin-left:auto}
 .tools{display:flex;gap:8px;margin-bottom:10px}
 </style></head><body>
 <h1>TOGA Module</h1>
 <div id="warn"></div><div class="bar" id="bar">…</div>
 <div id="list"></div>
 <script>
-let EFF=[],ready=false,touching=null;
+let EFF=[],ready=false,OPTS='';
 const FOLLOW=255,OFF=200;
-// optgroups by index range, so 90 modes stay navigable on a phone.
+// Follow-mask bits (mirror toga_proto.h). MODE (0x04) is reserved — the effect
+// dropdown already expresses mode-follow — so the UI preserves it untouched.
+const F_STROBE=1,F_BRIGHT=2,F_MODE=4,F_BEAT=8,F_BLACK=16;
+const IDENT=201;   // TOGA_EFFECT_IDENTIFY — momentary "blink to find this strip"
 const GROUPS=[[0,25,'Feld'],[26,34,'Geometrie'],[35,39,'Leben'],[40,51,'Spiele'],[52,58,'Gesichter'],[59,89,'Weltraum']];
 const macid=m=>m.replace(/:/g,'');
 const nameOf=v=>v==FOLLOW?'folgt Grid':(v==OFF?'aus':(EFF[v]||('#'+v)));
 function set(mac,q){fetch('/api/set?mac='+encodeURIComponent(mac)+'&'+q)}
-function opts(sel){
+function optsHTML(){
   let h='';
   for(const gr of GROUPS){h+='<optgroup label="'+gr[2]+'">';
-    for(let i=gr[0];i<=gr[1];i++)h+='<option value="'+i+'"'+(sel==i?' selected':'')+'>'+i+' '+(EFF[i]||'')+'</option>';
+    for(let i=gr[0];i<=gr[1];i++)h+='<option value="'+i+'">'+i+' '+(EFF[i]||'')+'</option>';
     h+='</optgroup>';}
-  h+='<option value="'+FOLLOW+'"'+(sel==FOLLOW?' selected':'')+'>folgt Grid</option>';
-  h+='<option value="'+OFF+'"'+(sel==OFF?' selected':'')+'>aus</option>';
+  h+='<option value="'+FOLLOW+'">folgt Grid</option><option value="'+OFF+'">aus</option>';
   return h;
 }
-async function loadEffects(){try{const r=await(await fetch('/api/effects')).json();EFF=r.names;ready=true}catch(e){}}
+// ── Per-control confirm lock ──────────────────────────────────────────────
+// The poll must never yank a control out from under a finger — that is the
+// two-phone glitch. valOf/pend mark a control "pending" the moment the user
+// changes it; put() then refuses to overwrite it until the module's own hello
+// confirms the new value (pend matches) or ~4s pass (assume the packet was
+// lost). A focused control is never touched either. So phone B's poll can no
+// longer reset phone A's open dropdown, and your own pick never snaps back.
+const valOf=el=>el.type==='checkbox'?(el.checked?'1':'0'):(''+el.value);
+function pend(el){el._p=valOf(el);el._t=Date.now()}
+function put(el,rep){
+  rep=''+rep;
+  if(el===document.activeElement)return;
+  if(el._p!=null){ if(el._p===rep){el._p=null} else if(Date.now()-el._t>4000){el._p=null} else return; }
+  if(el.type==='checkbox')el.checked=(rep==='1');else el.value=rep;
+}
+const rows={};                                   // mac -> refs, built once, patched in place
+function makeCard(mac){
+  const c=document.createElement('div'); c.className='m';
+  c.innerHTML=
+    '<div class="row"><input class="nm" type="text" maxlength="15"> <span class="mac"></span>'+
+      ' <span class="pill st"></span> <span class="pill lk"></span> <span class="pill vt"></span>'+
+      '<button class="idf" title="Streifen blinken lassen">&#128161; Finden</button></div>'+
+    '<div class="meta"></div>'+
+    '<div class="row"><label>Modus</label><select class="ef">'+OPTS+'</select></div>'+
+    '<div class="row slave"><label>Slave</label>'+
+      '<label><input type="checkbox" class="fm"> Grid-Modus</label>'+
+      '<label><input type="checkbox" class="fs"> Strobe</label>'+
+      '<label><input type="checkbox" class="fb"> Helligkeit</label>'+
+      '<label><input type="checkbox" class="fe"> Beat</label>'+
+      '<label><input type="checkbox" class="fk"> Blackout</label></div>'+
+    '<div class="row"><label>Gain</label><input type="range" min="10" max="200" class="gn"><span class="gv"></span></div>'+
+    '<div class="row"><label>LEDs</label><input type="number" min="1" max="512" class="ld">'+
+      '<span class="hint">Enter = speichern &amp; Neustart</span></div>'+
+    '<div class="row"><label>Gap</label><input type="number" min="1" max="255" class="gp">'+
+      '<span class="hint">1 = jede LED · N = jede N-te leuchtet, N-1 dunkel</span></div>'+
+    '<div class="row"><label>Boden</label><select class="fl">'+
+      '<option value="0">Aus</option><option value="1">Fluss &#9654;</option><option value="2">Fluss &#9664;</option>'+
+      '</select><span class="hint">Bodenstreifen: Taste 5 l&auml;sst ihn flie&szlig;en</span></div>'+
+    '<div class="row"><label>Akku</label><span class="bt"></span>'+
+      '<label style="min-width:auto"><input type="checkbox" class="bm"> Unterspannungs-Schutz</label></div>';
+  const q=s=>c.querySelector(s);
+  const r={card:c,nm:q('.nm'),mac:q('.mac'),st:q('.st'),lk:q('.lk'),vt:q('.vt'),meta:q('.meta'),ef:q('.ef'),fm:q('.fm'),idf:q('.idf'),
+           fs:q('.fs'),fb:q('.fb'),fe:q('.fe'),fk:q('.fk'),gn:q('.gn'),gv:q('.gv'),ld:q('.ld'),gp:q('.gp'),fl:q('.fl'),bt:q('.bt'),bm:q('.bm'),follow:0,effNow:255};
+  // Identify: momentary blink so you can find this strip. Not an effect change — sent raw, no pending.
+  r.idf.onclick=()=>set(mac,'effect='+IDENT);
+  const sendFollow=()=>{ let mk=(r.follow&F_MODE);              // keep the reserved mode bit as-is
+    if(r.fs.checked)mk|=F_STROBE; if(r.fb.checked)mk|=F_BRIGHT; if(r.fe.checked)mk|=F_BEAT; if(r.fk.checked)mk|=F_BLACK;
+    set(mac,'follow='+mk); };
+  r.nm.onchange=e=>{pend(e.target);set(mac,'name='+encodeURIComponent(e.target.value))};
+  r.ef.onchange=e=>{pend(e.target);set(mac,'effect='+e.target.value)};
+  // Grid-Modus = a view of effectPin: checked → follow grid (255); unchecked → pin the mode showing now.
+  r.fm.onchange=e=>{pend(e.target);set(mac,'effect='+(e.target.checked?FOLLOW:r.effNow))};
+  [r.fs,r.fb,r.fe,r.fk].forEach(cb=>cb.onchange=e=>{pend(e.target);sendFollow()});
+  r.gn.oninput=e=>{r.gv.textContent=e.target.value+'%';pend(e.target)};
+  r.gn.onchange=e=>set(mac,'gain='+e.target.value);
+  r.ld.onchange=e=>{pend(e.target);set(mac,'leds='+e.target.value)};
+  r.gp.onchange=e=>{pend(e.target);set(mac,'gap='+e.target.value)};
+  r.fl.onchange=e=>{pend(e.target);set(mac,'floor='+e.target.value)};
+  r.bm.onchange=e=>{pend(e.target);set(mac,'bmon='+(e.target.checked?1:0))};
+  return r;
+}
+async function loadEffects(){try{const r=await(await fetch('/api/effects')).json();EFF=r.names;OPTS=optsHTML();ready=true}catch(e){}}
 async function tick(){
-  if(!ready)await loadEffects();
+  if(!ready){await loadEffects(); if(!ready)return}
   let d; try{d=await(await fetch('/api/modules')).json()}catch(e){return}
   document.getElementById('warn').innerHTML = d.chOk?'':
     '<div class="warn"><b>Kanal '+d.ch+' statt '+d.chWant+'.</b> Dieser Knoten h&auml;ngt am Router und'+
@@ -255,34 +387,40 @@ async function tick(){
   document.getElementById('bar').textContent =
     'Kanal '+d.ch+' · Grid '+(d.gridSeen?('sichtbar, Modus '+d.gridMode):'nicht gesehen')+' · '+d.mods.length+' Module';
   const L=document.getElementById('list');
-  if(!d.mods.length){L.innerHTML='<div class="empty">Noch kein Modul geh&ouml;rt.'+
-    (d.chOk?' Modul eingeschaltet? Es meldet sich einmal pro Sekunde.':'')+'</div>';return}
-  L.innerHTML=d.mods.map(m=>{
-    const id=macid(m.mac);
-    return '<div class="m '+(m.online?'on':'off')+'">'+
-      '<span class="mac">'+m.mac+'</span> '+
-      '<span class="pill">'+(m.online?'online':('weg seit '+m.age+'s'))+'</span> '+
-      '<span class="pill">'+(m.link?'Controller ok':'kein Controller')+'</span>'+
-      '<div class="meta">'+m.w+'&times;'+m.h+' · Pin '+m.pin+' · Gruppe '+m.grp+
-        ' · l&auml;uft: '+nameOf(m.effNow)+' · up '+m.up+'s</div>'+
-      '<div class="row"><label>Modus</label><select id="e'+id+'">'+opts(m.eff)+'</select></div>'+
-      '<div class="row"><label>Gain</label><input type="range" min="10" max="200" value="'+m.gain+
-        '" id="g'+id+'"><span id="gv'+id+'">'+m.gain+'%</span></div>'+
-      '<div class="row"><label>Akku</label>'+
-        ((m.batt>0||m.bmon)?('<span class="pill">&#128267; '+m.batt.toFixed(2)+' V'+(m.blow?' &#9888;':'')+'</span>'):'')+
-        '<label style="min-width:auto"><input type="checkbox" id="b'+id+'"'+(m.bmon?' checked':'')+'> Unterspannungs-Schutz</label>'+
-      '</div></div>';
-  }).join('');
+  const seen={};
+  if(!d.mods.length){ L.innerHTML='<div class="empty">Noch kein Modul geh&ouml;rt.'+
+    (d.chOk?' Modul eingeschaltet? Es meldet sich einmal pro Sekunde.':'')+'</div>';
+    for(const k in rows)delete rows[k]; return; }
+  if(L.querySelector('.empty'))L.innerHTML='';
   d.mods.forEach(m=>{
-    const id=macid(m.mac);
-    document.getElementById('e'+id).onchange=e=>set(m.mac,'effect='+e.target.value);
-    const g=document.getElementById('g'+id);
-    g.oninput=e=>{document.getElementById('gv'+id).textContent=e.target.value+'%';touching=id};
-    g.onchange=e=>{set(m.mac,'gain='+e.target.value);touching=null};
-    document.getElementById('b'+id).onchange=e=>set(m.mac,'bmon='+(e.target.checked?1:0));
+    const id=macid(m.mac); seen[id]=1;
+    let r=rows[id];
+    if(!r){ r=rows[id]=makeCard(m.mac); L.appendChild(r.card); }
+    r.card.className='m '+(m.online?'on':'off');
+    r.mac.textContent=m.mac;
+    r.st.textContent=m.online?'online':('weg seit '+m.age+'s');
+    r.lk.textContent=m.link?'Controller ok':'kein Controller';
+    // Spannung: always visible per module. battVolt is sampled every 10s on the
+    // module regardless of the undervoltage monitor, so this shows even with bmon off.
+    r.vt.innerHTML='&#9889; '+(m.batt>0?m.batt.toFixed(2)+'&nbsp;V':'&ndash;')+(m.blow?' &#9888;':'');
+    r.meta.innerHTML=m.w+'&times;'+m.h+' · Pin '+m.pin+' · Gruppe '+m.grp+' · l&auml;uft: '+nameOf(m.effNow)+' · up '+m.up+'s';
+    put(r.nm,m.name);
+    put(r.ef,m.eff);
+    r.effNow=m.effNow;                          // remembered so unchecking Grid-Modus can pin it
+    put(r.fm,(m.eff==FOLLOW)?1:0);
+    r.follow=m.follow;
+    put(r.fs,(m.follow&F_STROBE)?1:0); put(r.fb,(m.follow&F_BRIGHT)?1:0);
+    put(r.fe,(m.follow&F_BEAT)?1:0);   put(r.fk,(m.follow&F_BLACK)?1:0);
+    put(r.gn,m.gain); r.gv.textContent=r.gn.value+'%';
+    put(r.ld,m.w*m.h);
+    put(r.gp,m.gap);
+    put(r.fl,m.floor);
+    r.bt.innerHTML=(m.batt>0||m.bmon)?('<span class="pill">&#128267; '+m.batt.toFixed(2)+' V'+(m.blow?' &#9888;':'')+'</span>'):'';
+    put(r.bm,m.bmon?1:0);
   });
+  for(const id in rows) if(!seen[id]){ rows[id].card.remove(); delete rows[id]; }
 }
-tick();setInterval(()=>{if(!touching)tick()},1500);
+tick();setInterval(tick,1500);          // poll always: put() protects in-flight edits, no global pause needed
 </script></body></html>)HTML";
 
 void handleRoot() { server.send_P(200, "text/html", PAGE); }

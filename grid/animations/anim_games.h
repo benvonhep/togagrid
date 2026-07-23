@@ -205,7 +205,7 @@ void anim_iconShow(uint32_t at){
   uint8_t val=(uint8_t)constrain(env*230.0f,0.0f,230.0f);
   uint8_t hue=(uint8_t)(at/22);
   clearFrame();
-  if(val>4) drawIcon(ICONS[idx],CRGB(CHSV(hue,235,val)));
+  if(val>4) drawIcon(ICONS[idx],hotColor(env,hue,14));
   showGrid();
 }
 
@@ -243,7 +243,7 @@ void anim_starTunnel3D(uint32_t at,float dt){
     uint8_t val=(uint8_t)(30+rr*225), hue=(uint8_t)(160+rr*80);
     int tx=(int)(5.0f+ca*(rr-0.13f)*5.6f+0.5f), ty=(int)(5.0f+sa*(rr-0.13f)*5.6f+0.5f);
     fillCell(ty,tx,CRGB(CHSV(hue,150,val/3)));           // dim trail
-    fillCell(cy,cx,CRGB(CHSV(hue,120,val)));             // bright head
+    fillCell(cy,cx,hotColor(0.118f+rr*0.882f,hue,0));    // bright head → white-hot
   }
   showGrid();
 }
@@ -269,7 +269,7 @@ void anim_rippleRain(uint32_t at,float dt){
     int R=(int)(rpRad[i]+0.5f);
     uint8_t val=(uint8_t)constrain(220.0f*(1.0f-rpRad[i]/8.0f),0.0f,220.0f);
     for(int r=0;r<11;r++) for(int c=0;c<11;c++)
-      if(max(iabs(r-rpR[i]),iabs(c-rpC[i]))==R) fillCell(r,c,CRGB(CHSV(rpHue[i],200,val)));
+      if(max(iabs(r-rpR[i]),iabs(c-rpC[i]))==R) fillCell(r,c,hotColor(val/255.0f,rpHue[i],0));
   }
   showGrid();
 }
@@ -315,7 +315,7 @@ void anim_plasmaField(uint32_t t){
              +sinf((x+y)*0.07f+tf*0.8f)+sinf(sqrtf(x*x+y*y)*0.10f-tf*1.3f);
       float nv=(v+4.0f)/8.0f;
       uint8_t hue=(uint8_t)(nv*255.0f+tf*20.0f);
-      setLED(true,xi+1,n,CRGB(CHSV(hue,230,200)));
+      setLED(true,xi+1,n,CRGB(CHSV(hue,230,(uint8_t)(90+nv*165))));   // brightness peaks add depth
     }
   }
   for(int yi=0;yi<12;yi++){
@@ -326,7 +326,7 @@ void anim_plasmaField(uint32_t t){
              +sinf((x+yy)*0.07f+tf*0.8f)+sinf(sqrtf(x*x+yy*yy)*0.10f-tf*1.3f);
       float nv=(v+4.0f)/8.0f;
       uint8_t hue=(uint8_t)(nv*255.0f+tf*20.0f);
-      setLED(false,yi+1,n,CRGB(CHSV(hue,230,200)));
+      setLED(false,yi+1,n,CRGB(CHSV(hue,230,(uint8_t)(90+nv*165))));   // brightness peaks add depth
     }
   }
   showGrid();
@@ -416,8 +416,7 @@ void anim_fireworks(uint32_t at,float dt){
     fpx[i]+=fpvx[i]*dt; fpy[i]+=fpvy[i]*dt;
     fpl[i]-=dt*0.0009f;
     int col=(int)(fpx[i]+0.5f), row=(int)(fpy[i]+0.5f);
-    uint8_t val=(uint8_t)constrain(fpl[i]*235.0f,0.0f,235.0f);
-    fillCell(row,col,CRGB(CHSV(fphue[i],230,val)));
+    fillCell(row,col,hotColor(fpl[i],fphue[i],0));
   }
   showGrid();
 }
@@ -446,7 +445,7 @@ void anim_reactionDiff(uint32_t at,float dt){
   clearFrame();
   for(int r=0;r<11;r++) for(int c=0;c<11;c++){
     uint8_t val=(uint8_t)constrain(rdB[r][c]*640.0f,0.0f,225.0f);
-    if(val>4) fillCell(r,c,CRGB(CHSV((uint8_t)(150+rdB[r][c]*260.0f),210,val)));
+    if(val>4) fillCell(r,c,hotColor(val/225.0f,(uint8_t)(150+rdB[r][c]*260.0f),0));
   }
   showGrid();
 }

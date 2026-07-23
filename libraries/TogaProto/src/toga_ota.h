@@ -15,7 +15,7 @@
 //  Owning the AP deleted the problem rather than managing it.
 //
 //  Flashing: ./flash-ota.sh <sketch> <hostname>.local
-//  Your Mac has to be ON togalights for that — it is a private network with
+//  Your Mac has to be ON togacontroller for that — it is a private network with
 //  no route to the internet, which is the point.
 // ══════════════════════════════════════════════════════════════════════
 #pragma once

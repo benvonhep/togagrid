@@ -22,6 +22,18 @@
 // for a freshly flashed board. (Group 0 = everyone is always accepted.)
 #define MODULE_GROUP_DEFAULT TOGA_GROUP_MODULES
 
+// ── Fallback phone hotspot ──
+// The module spends its first 30s looking for the controller AP (TOGA_AP_SSID =
+// 'togacontroller'). If it never shows, the module joins THIS network instead —
+// your phone's Personal Hotspot — and serves the module web page there, so you
+// can configure it with no controller present. Distinct SSID from the fleet AP
+// on purpose. Password is yours: leave it blank here and set it per board with
+// the serial `hotspot <ssid> <pass>` command (stored in NVS), or bake a shared
+// one in. SSID must be space-free (the serial parser splits on whitespace).
+#define TOGA_HOTSPOT_SSID "togalights"
+#define TOGA_HOTSPOT_PASS "andmagic"   // set your phone hotspot to this (>=8 chars); override per board with serial `hotspot`
+#define TOGA_FALLBACK_MS  30000    // look for the controller this long before falling back
+
 // ── LED hardware ──
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
@@ -30,6 +42,13 @@
 // Past ~400px a FastLED.show() no longer fits inside STROBE_FLASH_MS and the
 // strobe stops looking sharp (same physical limit as the grid's 12 strips).
 #define MAX_LEDS  512
+
+// On boot the module blanks this many physical LEDs once, regardless of the
+// configured strip length (see setup() in module.ino). FastLED only clocks out
+// the live gNumLeds, so LEDs past a shrunk count keep their last latched colour
+// and stay stuck lit after a LED-count change or a restart. Driving this many
+// black pixels once flushes the whole strip. Capped at MAX_LEDS.
+#define MODULE_BLANK_LEDS 500
 
 // ── 1D mode set (module_effects.h) ──
 // The 90 procedural modes are designed and supported for strips of 1..120 LEDs.
@@ -49,13 +68,12 @@
 #define FRAME_MS 20            // 50 FPS cap, same as the grid
 
 // ── Mode-strobe / castle-strobe blink timing ──
-// The protocol has no param for these, so the grid can never move off its
-// own defaults — see the strobeOnMs/strobeOffMs defaults in grid.ino.
-// If those ever change, change these too.
+// As of v6 the module MIRRORS the grid's tunable strobeOnMs/strobeOffMs from the
+// sync (gStrobeOnMs/gStrobeOffMs), so the two strobes flash the grid's exact
+// rhythm regardless of strip length. These constants are only the fallback used
+// until the first sync arrives; keep them equal to the grid's own defaults.
 #define MODE_ON_MS    40
 #define MODE_OFF_MS   40
-#define CASTLE_ON_MS  40
-#define CASTLE_OFF_MS 40
 
 // Brightness the strobes flash at, before the per-module gain trim.
 // The button-15 strobe does NOT reach this: STROBE_MAX_BRI (<toga_proto.h>)

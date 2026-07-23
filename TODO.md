@@ -24,6 +24,9 @@ Meldet das Grid auf Serial `WARN: 2. Befehls-Sender …`, funkt ein zweiter Knot
 Befehle mit – dann ist genau dieser Fehler wieder da.
 
 ## Erledigt (Referenz)
+- [x] Modul-Spot (Taste 5): momentaner Laufpunkt auf allen Modulen, solange
+      gehalten — eigenes Flag `TOGA_F_SPOT`, `renderSpot()` in `module_effects.h`,
+      Grid unberührt (siehe [BEFEHLE.md](BEFEHLE.md))
 - [x] Beat-Match neu gebaut: Tempo-Erkennung im Grid statt im Controller, Peak
       sitzt per Phasen-Anker auf dem Tap, Sägezahn statt Exponential-Decay,
       kein Scharfschalten mehr (`grid/grid_beat.h`)

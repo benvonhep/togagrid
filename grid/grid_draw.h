@@ -126,6 +126,26 @@ void fxNebula(uint32_t at,uint8_t hue,uint8_t sat,float scale,float tspd,float r
       if(v>0.02f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(hue,sat,255)),v);
     } }
 }
+// Value-driven "hot" colour — restores the early field-mode look for later modes.
+//   bright → white-hot core (saturation ramps down), dim → fully saturated;
+//   hue spreads with the value so one mode drifts across a band of hues.
+// v in 0..1 (intensity), h0 = base/identity hue, span = hue spread across the range,
+// satFloor = saturation at full brightness (lower = whiter core). Mirrors the inline
+// `sat = 255 - bri*K` trick used all over anim_field.h / anim_geometry.h.
+static inline CRGB hotColor(float v,uint8_t h0,uint8_t span=32,uint8_t satFloor=50){
+  v = v<0.0f?0.0f:(v>1.0f?1.0f:v);
+  uint8_t hue = h0 + (uint8_t)(v*span);
+  uint8_t sat = (uint8_t)(255.0f - v*(255.0f-satFloor));   // white-hot core
+  return CRGB(CHSV(hue,sat,(uint8_t)(v*255.0f)));
+}
+// Same white-hot ramp + hue drift, but full value (255) — for use as the colour arg to
+// fxAdd(), where intensity is applied separately by fxAdd's own factor. Prevents the
+// brightness being squared, while still bleaching the hot samples toward white.
+static inline CRGB hotTint(float v,uint8_t h0,uint8_t span=32,uint8_t satFloor=50){
+  v = v<0.0f?0.0f:(v>1.0f?1.0f:v);
+  return CRGB(CHSV(h0+(uint8_t)(v*span),(uint8_t)(255.0f - v*(255.0f-satFloor)),255));
+}
+
 // Soft-shaded lit sphere with a light direction and faint surface texture.
 void fxPlanet(float cx,float cy,float r,uint8_t hue,uint8_t sat,float lx,float ly,uint16_t rot){
   float R=r+1.3f;

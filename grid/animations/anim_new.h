@@ -10,7 +10,7 @@ void anim_starfield2(uint32_t at){
   clearFrame(); float tf=at*0.001f;
   for(int i=0;i<70;i++){ float ang=fxhash(i*1.7f)*6.2832f; float ph=fxfract(tf*0.25f+fxhash(i*3.1f));
     float r=ph*ph*62.0f; float br=ph; if(br>1)br=1;
-    fxSplat(cosf(ang)*r,sinf(ang)*r,0.4f+ph*1.5f,1.0f,CRGB(CHSV(150+(int)(fxhash(i)*40),40,(uint8_t)(br*255)))); }
+    fxSplat(cosf(ang)*r,sinf(ang)*r,0.4f+ph*1.5f,1.0f,hotColor(br,150+(int)(fxhash(i)*40),30)); }
   showGrid();
 }
 // 60 — WARP: starfield with elongated motion-blur streaks.
@@ -18,7 +18,7 @@ void anim_warp(uint32_t at){
   clearFrame(); float tf=at*0.001f;
   for(int i=0;i<55;i++){ float ang=fxhash(i*1.7f)*6.2832f; float ph=fxfract(tf*0.6f+fxhash(i*3.1f));
     float r=ph*ph*64.0f; float r0=r-6.0f-ph*10.0f; if(r0<0)r0=0; float c=cosf(ang),s=sinf(ang); float br=ph; if(br>1)br=1;
-    fxStreak(c*r0,s*r0,c*r,s*r,0.4f,1.0f,CRGB(CHSV(160,30,(uint8_t)(br*255)))); }
+    fxStreak(c*r0,s*r0,c*r,s*r,0.4f,1.0f,hotColor(br,160,28)); }
   showGrid();
 }
 // 61 — ASTEROIDS: rocks drifting across on linear paths, with a spinning glint.
@@ -34,11 +34,11 @@ void anim_asteroids(uint32_t at){
 void anim_shootingStars(uint32_t at){
   clearFrame(); float tf=at*0.001f;
   for(int i=0;i<45;i++){ float x=(fxhash(i*1.3f)-0.5f)*120,y=(fxhash(i*2.7f)-0.5f)*120;
-    float tw=0.4f+0.6f*fabsf(sinf(tf*2.0f+i)); fxSplat(x,y,0.35f,0.9f,CRGB(CHSV(150,20,(uint8_t)(tw*90)))); }
+    float tw=0.4f+0.6f*fabsf(sinf(tf*2.0f+i)); fxSplat(x,y,0.35f,0.9f,hotColor(tw*0.35f,150,22)); }
   for(int i=0;i<3;i++){ float ph=fxfract(tf*0.4f+fxhash(i*11.1f));
     float x0=-60+fxhash(i*4.4f)*30,y0=-50+fxhash(i*6.6f)*100; float ang=-0.5f+fxhash(i*8.8f)*0.4f; float c=cosf(ang),s=sinf(ang);
     float head=ph*150.0f,tail=head-22.0f; if(tail<0)tail=0; float br=(1.0f-ph); if(ph<0.1f)br=ph*10.0f;
-    fxStreak(x0+c*tail,y0+s*tail,x0+c*head,y0+s*head,0.5f,1.1f,CRGB(CHSV(150,10,(uint8_t)(br*255)))); }
+    fxStreak(x0+c*tail,y0+s*tail,x0+c*head,y0+s*head,0.5f,1.1f,hotColor(br,150,20)); }
   showGrid();
 }
 // 63 — BLACK HOLE: dark core, bright swirling accretion ring.
@@ -55,7 +55,7 @@ void anim_pulsar2(uint32_t at){
   clearFrame(); float tf=at*0.001f; float base=tf*2.4f;
   fxSplat(0,0,2.5f,1.2f,CRGB(200,220,255));
   for(int b=0;b<2;b++){ float a=base+b*3.1416f; for(int k=1;k<=14;k++){ float rr=k*4.4f; float br=(1.0f-k/15.0f);
-    fxSplat(cosf(a)*rr,sinf(a)*rr,0.7f,1.0f,CRGB(CHSV(160,120,(uint8_t)(br*255)))); } }
+    fxSplat(cosf(a)*rr,sinf(a)*rr,0.7f,1.0f,hotColor(br,160,26)); } }
   for(int b=0;b<2;b++){ float a=base-0.28f+b*3.1416f; for(int k=3;k<=14;k++){ float rr=k*4.4f;
     fxSplat(cosf(a)*rr,sinf(a)*rr,0.5f,1.0f,CRGB(CHSV(160,150,40))); } }
   showGrid();
@@ -66,7 +66,7 @@ void anim_pulsarNebula(uint32_t at){
   fxNebula(at,180,200,180,40,44,0.9f);
   float a=tf*2.0f; fxSplat(0,0,2.0f,1.0f,CRGB(220,230,255));
   for(int b=0;b<2;b++){ float aa=a+b*3.1416f; for(int k=1;k<=12;k++){ float rr=k*3.6f; float br=1.0f-k/13.0f;
-    fxSplat(cosf(aa)*rr,sinf(aa)*rr,0.6f,1.0f,CRGB(CHSV(150,80,(uint8_t)(br*255)))); } }
+    fxSplat(cosf(aa)*rr,sinf(aa)*rr,0.6f,1.0f,hotColor(br,150,26)); } }
   showGrid();
 }
 // 66 — ORION NEBULA: layered gas clouds + embedded stars.
@@ -75,7 +75,7 @@ void anim_orionNebula(uint32_t at){
   fxNebula(at,155,190,150,30,48,0.9f);
   fxNebula(at,215,160,220,45,30,0.8f);
   fxNebula(at,20,130,300,60,16,0.7f);
-  for(int i=0;i<6;i++) fxSplat((fxhash(i*3.3f)-0.5f)*70,(fxhash(i*5.1f)-0.5f)*70,0.5f,0.9f,CRGB(CHSV(150,15,225)));
+  for(int i=0;i<6;i++) fxSplat((fxhash(i*3.3f)-0.5f)*70,(fxhash(i*5.1f)-0.5f)*70,0.5f,0.9f,hotColor(0.88f,150,18));
   showGrid();
 }
 // 67 — HORSEHEAD: dark silhouette against a glowing backdrop.
@@ -88,7 +88,7 @@ void anim_horsehead(uint32_t at){
       float v=glow*(0.35f+0.65f*grad)*0.9f;
       float headTop=-6.0f-10.0f*expf(-((x+4)*(x+4))/60.0f);
       if(x>-16 && x<8 && y>headTop) v*=0.04f;                 // silhouette stays near-black
-      if(v>0.02f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(24,205,255)),v);
+      if(v>0.02f) fxAdd(pass?false:true,s+1,n,hotTint(v,24,20),v);
     } }
   showGrid();
 }
@@ -129,7 +129,7 @@ void anim_shipPanel(uint32_t at){
   for(int gy=0;gy<4;gy++)for(int gx=0;gx<5;gx++){ int i=gy*5+gx; float px=-40+gx*20.0f,py=-30+gy*20.0f;
     float rate=0.5f+fxhash(i*2.1f)*3.0f; float ph=fabsf(sinf(tf*rate+fxhash(i*4.4f)*6.28f));
     uint8_t hue=(i%3==0)?0:(i%3==1)?90:150;
-    fxSplat(px,py,2.4f,1.1f,CRGB(CHSV(hue,220,(uint8_t)(40+ph*215)))); }
+    fxSplat(px,py,2.4f,1.1f,hotColor(0.157f+ph*0.843f,hue,16)); }
   showGrid();
 }
 // 72 — RADAR: sweeping beam (soft leading edge) + ships that flash when swept.
@@ -153,7 +153,7 @@ void anim_sineWaves(uint32_t at){
     for(int n=1;n<=121;n++){ float other=(float)n-CENTER; float x=pass?other:base,y=pass?base:other;
       float w=sinf(x*0.14f+tf*1.5f)+0.7f*sinf((x*0.09f-y*0.06f)+tf*1.0f);
       float f=constrain(1.0f-fabsf(y*0.08f-w)*1.4f,0.0f,1.0f);
-      if(f>0.02f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(140+(uint8_t)(w*30),220,255)),f);
+      if(f>0.02f) fxAdd(pass?false:true,s+1,n,hotTint(f,140+(uint8_t)(w*30),20),f);
     } }
   showGrid();
 }
@@ -173,7 +173,7 @@ void anim_warningLight(uint32_t at){
   fxSplat(0,0,3.5f,1.4f,CRGB(255,140,0));
   for(int k=1;k<=16;k++){ float rr=k*4.0f; float spread=0.05f*k; float br=(1.0f-k/17.0f);
     for(int j=-1;j<=1;j++){ float aa=a+j*spread; float b2=br*(j==0?1.0f:0.6f);
-      fxSplat(cosf(aa)*rr,sinf(aa)*rr,0.8f,1.2f,CRGB(CHSV(20,255,(uint8_t)(b2*255)))); } }
+      fxSplat(cosf(aa)*rr,sinf(aa)*rr,0.8f,1.2f,hotColor(b2,20,0)); } }
   showGrid();
 }
 // 76 — ALIENS: glowing alien heads with blinking eyes, gently bobbing.
@@ -229,7 +229,7 @@ void anim_spiralEject(uint32_t at){
   clearFrame(); float tf=at*0.001f; fxSplat(0,0,2.4f,1.2f,CRGB(255,255,255));
   for(int i=0;i<60;i++){ float ph=fxfract(tf*0.5f+fxhash(i*3.7f)); float r=ph*60.0f;
     float ang=fxhash(i*3.7f)*6.2832f+tf*2.0f+ph*3.0f; float br=1.0f-ph;
-    fxSplat(cosf(ang)*r,sinf(ang)*r,0.5f+ph*1.0f,1.0f,CRGB(CHSV((uint8_t)(180+ph*80),200,(uint8_t)(br*255)))); }
+    fxSplat(cosf(ang)*r,sinf(ang)*r,0.5f+ph*1.0f,1.0f,hotColor(br,(uint8_t)(180+ph*80),0)); }
   showGrid();
 }
 // 82 — 3D-NOISE CLOUDS: drifting layered value-noise.
@@ -240,7 +240,7 @@ void anim_clouds3d(uint32_t at){
       uint8_t nz=inoise8((uint16_t)((x+80)*130+(uint16_t)(at*20)),(uint16_t)((y+80)*130),(uint16_t)(at*12));
       uint8_t nz2=inoise8((uint16_t)((x+80)*300),(uint16_t)((y+80)*300+(uint16_t)(at*15)),(uint16_t)(at*8));
       float v=(nz/255.0f)*0.7f+(nz2/255.0f)*0.3f; v=constrain((v-0.35f)/0.65f,0.0f,1.0f); v=v*v;
-      if(v>0.03f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(150+(uint8_t)((nz2-128)/6),90,255)),v);
+      if(v>0.03f) fxAdd(pass?false:true,s+1,n,hotTint(v,150+(uint8_t)((nz2-128)/6),18),v);
     } }
   showGrid();
 }
@@ -272,7 +272,7 @@ void anim_starsFlying(uint32_t at){
     float x=rx-120.0f*floorf((rx+60.0f)/120.0f);                          // wrap into [-60,60)
     float y=ry-120.0f*floorf((ry+60.0f)/120.0f);
     float tw=0.5f+0.5f*sinf(tf*3.0f+i);
-    fxSplat(x,y,0.4f+tw*0.35f,1.0f,CRGB(CHSV(150,25,(uint8_t)(110+tw*145)))); }
+    fxSplat(x,y,0.4f+tw*0.35f,1.0f,hotColor(0.43f+tw*0.57f,150,20)); }
   showGrid();
 }
 // 86 — FIREWORK: shells launch, burst into radial sparks that arc down and fade.
@@ -292,7 +292,7 @@ void anim_firework2(uint32_t at){
       for(int p=0;p<24;p++){ float pa=p*0.2618f+fxhash(s*13.0f);
         float spd=18.0f+fxhash(s*100.0f+p*1.0f)*10.0f;
         float px=bx+cosf(pa)*spd*e, py=by+sinf(pa)*spd*e-14.0f*e*e;      // gravity
-        fxSplat(px,py,0.5f,1.0f,CRGB(CHSV(hue,200,(uint8_t)(fade*fade*255)))); }
+        fxSplat(px,py,0.5f,1.0f,hotColor(fade*fade,hue,0)); }
     }
   }
   showGrid();
@@ -305,7 +305,7 @@ void anim_hStripesFlow(uint32_t at){
     for(int n=1;n<=121;n++){ float other=(float)n-CENTER; float y=pass?base:other;
       float p=y-tf*22.0f; float m=p-period*floorf(p/period);          // position within one period (0..period)
       float f=constrain(m/aa,0.0f,1.0f)*constrain((on-m)/aa,0.0f,1.0f); // hard band, 1-LED ramp at both edges
-      if(f>0.03f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(150+(uint8_t)(8.0f*sinf(y*0.05f)),210,255)),f);
+      if(f>0.03f) fxAdd(pass?false:true,s+1,n,hotTint(f,150+(uint8_t)(8.0f*sinf(y*0.05f)),24),f);
     } }
   showGrid();
 }
@@ -316,7 +316,8 @@ void anim_vuColumns(uint32_t at){
     float lvl=constrain(0.2f+0.32f*(0.5f+0.5f*sinf(tf*2.5f+xi*0.8f))+0.6f*fxhash(xi*2.3f+beat*1.7f)*decay,0.05f,1.0f);
     float topY=-60.0f+lvl*120.0f;
     for(int n=1;n<=121;n++){ float y=(float)n-CENTER; if(y>topY)continue; float frac=(y+60.0f)/120.0f;
-      fxAdd(true,xi+1,n,CRGB(CHSV((uint8_t)(96*(1.0f-frac)),230,255)),(topY-y<5.0f)?1.0f:0.7f); }
+      float a=(topY-y<5.0f)?1.0f:0.7f;
+      fxAdd(true,xi+1,n,hotTint(a,(uint8_t)(96*(1.0f-frac)),6,150),a); }
   }
   showGrid();
 }
@@ -327,13 +328,15 @@ void anim_vuGrid(uint32_t at){
     float lvl=constrain(0.2f+0.3f*(0.5f+0.5f*sinf(tf*2.5f+xi*0.8f))+0.6f*fxhash(xi*2.3f+beat*1.7f)*decay,0.05f,1.0f);
     float topY=-60.0f+lvl*120.0f;
     for(int n=1;n<=121;n++){ float y=(float)n-CENTER; if(y>topY)continue; float frac=(y+60.0f)/120.0f;
-      fxAdd(true,xi+1,n,CRGB(CHSV((uint8_t)(96*(1.0f-frac)),230,255)),(topY-y<5.0f)?1.0f:0.65f); }
+      float a=(topY-y<5.0f)?1.0f:0.65f;
+      fxAdd(true,xi+1,n,hotTint(a,(uint8_t)(96*(1.0f-frac)),6,150),a); }
   }
   for(int yi=0;yi<12;yi++){
     float lvl=constrain(0.2f+0.3f*(0.5f+0.5f*cosf(tf*2.3f+yi*0.7f))+0.6f*fxhash(yi*3.1f+beat*2.9f)*decay,0.05f,1.0f);
     float rightX=-60.0f+lvl*120.0f;
     for(int n=1;n<=121;n++){ float x=(float)n-CENTER; if(x>rightX)continue; float frac=(x+60.0f)/120.0f;
-      fxAdd(false,yi+1,n,CRGB(CHSV((uint8_t)(160+64*(1.0f-frac)),230,255)),(rightX-x<5.0f)?1.0f:0.65f); }
+      float a=(rightX-x<5.0f)?1.0f:0.65f;
+      fxAdd(false,yi+1,n,hotTint(a,(uint8_t)(160+64*(1.0f-frac)),6,150),a); }
   }
   showGrid();
 }

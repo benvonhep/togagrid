@@ -68,7 +68,28 @@
 //     grid mode). The structs are unchanged by the effects half, but effectPin/
 //     effectNow values 9..89 now mean real modes — an unpatched module would read
 //     them as >=9 and silently fall back to FOLLOW. Both halves land under v4.
-#define TOGA_VERSION  4
+// v5: per-module follow/slave config. TogaModCfgMsg grew 18 -> 36 (followMask over
+//     the old reserved2, plus ledCount + name[16]); TogaHelloMsg grew 32 -> 48
+//     (followMask over the old reserved, plus name[16]). Both change struct SHAPE,
+//     so the size check now separates them from Sync/Cmd — but the version is still
+//     what makes it safe. Reflash every node.
+// v6: mode/castle-strobe on/off ms added to TogaSyncMsg (repurposed the two
+//     reserved3 bytes, size unchanged at 32). A module used to guess these at a
+//     hardcoded 40/40; now it mirrors the grid's tunable values, so the two
+//     strobes flash the SAME rhythm on the grid and every module. Repurposing
+//     reserved bytes changes their MEANING (an un-updated node would read them as
+//     0), which is exactly the "understood, not rejected" hazard the version
+//     guards — hence the bump. Reflash every node.
+// v7: per-module output GAP (sparse-strip spacing). TogaModCfgMsg grew 36 -> 38
+//     (gap + reserved3) and TogaHelloMsg grew 48 -> 52 (gap + reserved2). Both
+//     change struct SHAPE, so the size check separates them from the older
+//     layouts — but the version is still what makes it safe. Reflash every node.
+// v8: per-module FLOOR-STRIP flow. Repurposes the v7 reserved bytes (no size
+//     change): TogaModCfgMsg.reserved3 -> floorFlow (37), TogaHelloMsg.reserved2[0]
+//     -> floorFlow (49). Changing a reserved byte's MEANING is the "understood, not
+//     rejected" hazard (an un-updated node read them as 0), so it needs the bump
+//     even though the sizes are unchanged. Reflash every node.
+#define TOGA_VERSION  8
 
 // The channel the bus runs on AND the channel the controller's AP is pinned to.
 // Those being the same number is the whole architecture: it is what lets a node
@@ -98,6 +119,12 @@
 #define TOGA_EFFECT_OFF    200  // pinned blackout (replaces the old effect id 8 "off")
 #define TOGA_EFFECT_FOLLOW 255  // not a pinned effect: derive it from the grid's mode
 #define TOGA_CFG_KEEP      254  // TogaModCfgMsg: leave this field as it is
+// A momentary action, not a stored effect: TogaModCfgMsg.effectPin == this makes the
+// addressed module blink bright white for a few seconds so you can find its strip.
+// It is NOT saved and does NOT change the module's real effect. An un-updated module
+// fails the (<90 || OFF || FOLLOW) test in applyModCfg and simply ignores it — so
+// this new sentinel needs no version bump of its own.
+#define TOGA_EFFECT_IDENTIFY 201
 
 // PROGMEM-friendly on ESP32 (flash is memory-mapped; the table lives in .rodata,
 // not RAM). Index 39 is plasmaLightning — the grid's anim_agentField is an alias
@@ -153,6 +180,8 @@ static inline const char* togaEffectName(uint8_t e){
 // only ever masks 0x01/0x02/0x04 and never SETS 0x08, so an un-updated node simply
 // ignores blackout and stays lit — graceful, never mis-understood.
 #define TOGA_F_BLACKOUT      0x08   // free key (phys 6 / logical 10)
+#define TOGA_F_SPOT          0x10   // phys key 5: momentary moving-spot override on modules
+                                    // (grid ignores 0x10; old modules mask it off, graceful)
 
 // ── Auto mood (TogaCmdMsg.autoMode), also on EVERY packet ──
 // 0 = off, 1..TOGA_AUTO_COUNT = the mood the grid should cycle through.
@@ -272,6 +301,23 @@ static inline bool togaStrobeOn(uint32_t t, uint32_t start, uint16_t gapMs){
   return ((uint32_t)(t - start) % period) < (uint32_t)STROBE_FLASH_MS;
 }
 
+// Square-wave gate for the mode-strobe (button 14) and castle-strobe (button 13):
+// ON for onMs at the start of each (onMs+offMs) window, measured from `start` on
+// the same ABSOLUTE grid as togaStrobeOn(). This is the whole point of the v6
+// change: both strobes used to chain `flip = now + onMs`, which scheduled every
+// flip only AFTER FastLED.show() returned — so show()'s duration (~30us/LED, i.e.
+// ~1ms on a 32px module but 15ms+ on a big grid panel) was added into every cycle
+// and the SAME setting flashed at DIFFERENT rates depending on strip length. A
+// short module ran near the true rate while the grid's large panels lagged, so a
+// short strip visibly flashed faster than the wall. Modulo of absolute time
+// cannot be stretched by a slow show(): the period is a property of onMs/offMs
+// alone, identical on the grid and every module regardless of length.
+static inline bool togaSquareOn(uint32_t t, uint32_t start, uint16_t onMs, uint16_t offMs){
+  uint32_t period = (uint32_t)onMs + (uint32_t)offMs;
+  if(period == 0) return true;                   // defensive: degenerate → treat as always on
+  return ((uint32_t)(t - start) % period) < (uint32_t)onMs;
+}
+
 // Button-15 strobe: hard ceiling on the flash brightness, 70% of full scale.
 // The flash is the brightest thing the installation ever does — every pixel at
 // once, usually white — so it does not get the full 255 that its shortness
@@ -337,11 +383,13 @@ struct TogaSyncMsg {
   uint8_t  tintR, tintG, tintB; // 23  exact current global-tint colour
   uint8_t  sColR, sColG, sColB; // 26  exact current strobe colour
   uint8_t  globalBrightness;    // 29  the master 1..MAX_BRIGHTNESS (controller scales its pad by this)
-  uint8_t  reserved3[2];        // 30  must be 0
+  uint8_t  strobeOnMs;          // 30  mode/castle-strobe ON  ms — modules mirror it (v6)
+  uint8_t  strobeOffMs;         // 31  mode/castle-strobe OFF ms — modules mirror it (v6)
 };
-static_assert(sizeof(TogaSyncMsg) == 32,             "TogaSyncMsg layout drifted");
-static_assert(offsetof(TogaSyncMsg, animSpeed) == 8, "TogaSyncMsg layout drifted");
-static_assert(offsetof(TogaSyncMsg, beatMs) == 20,   "TogaSyncMsg layout drifted");
+static_assert(sizeof(TogaSyncMsg) == 32,              "TogaSyncMsg layout drifted");
+static_assert(offsetof(TogaSyncMsg, animSpeed) == 8,  "TogaSyncMsg layout drifted");
+static_assert(offsetof(TogaSyncMsg, beatMs) == 20,    "TogaSyncMsg layout drifted");
+static_assert(offsetof(TogaSyncMsg, strobeOnMs) == 30,"TogaSyncMsg layout drifted");
 // A module announcing itself, ~1/s. This is the ONE thing a module transmits,
 // and it is deliberately not an exception to "modules never apply steps": it
 // reports, it never commands. Nothing depends on it — miss every hello and the
@@ -360,16 +408,59 @@ struct TogaHelloMsg {
   uint32_t uptimeS;             // 24  spots a module that is silently rebooting
   uint16_t battMv;              // 28  cell voltage in mV, 0 = unknown/none (v4)
   uint8_t  battFlags;           // 30  bit0 = monitoring enabled, bit1 = undervoltage pending (v4)
-  uint8_t  reserved;            // 31  must be 0
+  uint8_t  followMask;          // 31  TOGA_FOLLOW_* — which grid functions we slave to (v5)
+  char     name[16];            // 32  user label, NUL-terminated, "" = never named (v5)
+  uint8_t  gap;                 // 48  output gap: 1 = every LED, N = light every Nth (v7)
+  uint8_t  floorFlow;           // 49  TOGA_FLOOR_* — floor-strip flow role/direction (v8)
+  uint8_t  reserved2[2];        // 50  must be 0 (keeps the 4-byte alignment)
 };
-static_assert(sizeof(TogaHelloMsg) == 32,           "TogaHelloMsg layout drifted");
+static_assert(sizeof(TogaHelloMsg) == 52,           "TogaHelloMsg layout drifted");
 static_assert(offsetof(TogaHelloMsg, mac) == 8,     "TogaHelloMsg layout drifted");
 static_assert(offsetof(TogaHelloMsg, width) == 20,  "TogaHelloMsg layout drifted");
 static_assert(offsetof(TogaHelloMsg, battMv) == 28, "TogaHelloMsg layout drifted");
+static_assert(offsetof(TogaHelloMsg, name) == 32,   "TogaHelloMsg layout drifted");
+static_assert(offsetof(TogaHelloMsg, gap) == 48,    "TogaHelloMsg layout drifted");
+static_assert(offsetof(TogaHelloMsg, floorFlow) == 49, "TogaHelloMsg layout drifted");
 
 // ── Battery flags (TogaHelloMsg.battFlags) ──
 #define TOGA_BATT_F_ENABLED 0x01
 #define TOGA_BATT_F_LOW     0x02
+
+// ── Per-module follow mask (TogaHelloMsg.followMask / TogaModCfgMsg.followMask) ──
+// Which grid functions a module slaves to. A cleared bit means "ignore that grid
+// function and stay on my own". Default is ALL set, so a module out of the box
+// mirrors the grid exactly like before this existed. TOGA_FOLLOW_MODE is reserved:
+// mode-follow is still expressed by effectPin == TOGA_EFFECT_FOLLOW; the bit exists
+// so the mask has room for a dedicated mode toggle later without another version bump.
+#define TOGA_FOLLOW_STROBE   0x01   // grid strobe + castle-strobe + mode-strobe flashes
+#define TOGA_FOLLOW_BRIGHT   0x02   // grid brightness (else the module runs at full)
+#define TOGA_FOLLOW_MODE     0x04   // reserved — grid-mode slave (UI deferred)
+#define TOGA_FOLLOW_BEAT     0x08   // grid beat-tap glow
+#define TOGA_FOLLOW_BLACKOUT 0x10   // grid blackout
+#define TOGA_FOLLOW_ALL      0x1F   // default: follow everything
+#define TOGA_FOLLOW_KEEP     0xFF   // TogaModCfgMsg sentinel: leave the mask unchanged
+
+// ── Per-module output gap (TogaHelloMsg.gap / TogaModCfgMsg.gap) ──
+// Sparse-strip spacing: light every Nth physical LED and blank the N-1 between.
+// gap=3 → LED0 lit, LED1+LED2 dark, LED3 lit, LED4… — i.e. a pixel is lit iff
+// (index % gap) == 0. gap<=1 lights every LED (feature off, the default). In a
+// TogaModCfgMsg, gap==0 means "leave unchanged" (like ledCount); a real change
+// sends 1..255. Applies to the module's normal render only — a strobe still
+// flashes every pixel, since a strobe is a room-wide all-on moment.
+#define TOGA_GAP_KEEP  0    // TogaModCfgMsg: leave the gap as it is
+#define TOGA_GAP_OFF   1    // every LED lit (feature disabled — the default)
+#define TOGA_GAP_MAX 255
+
+// ── Per-module floor-strip flow (TogaHelloMsg.floorFlow / TogaModCfgMsg.floorFlow) ──
+// A module flagged as a "floor strip" reacts to the controller's spot key (button 5,
+// TOGA_F_SPOT): each press scrolls the module's CURRENT render (the grid mode, when
+// slaving) once along the strip in the chosen direction. Non-flagged modules ignore
+// button 5 entirely. FWD/REV pick which end the light flows toward.
+#define TOGA_FLOOR_OFF   0    // not a floor strip (default)
+#define TOGA_FLOOR_FWD   1    // floor strip, scroll toward the far end
+#define TOGA_FLOOR_REV   2    // floor strip, scroll toward the near end
+#define TOGA_FLOOR_MAX   2
+#define TOGA_FLOOR_KEEP  0xFF // TogaModCfgMsg sentinel: leave the floor setting unchanged
 
 // Settings for exactly ONE module. Broadcast like everything else — the module
 // whose MAC matches applies it, the rest drop it. Addressing by MAC rather than
@@ -381,10 +472,18 @@ struct TogaModCfgMsg {
   uint8_t  effectPin;           // 14  effect id, TOGA_EFFECT_FOLLOW, or TOGA_CFG_KEEP
   uint8_t  gain;                // 15  10..200, or 0 = keep
   uint8_t  battMon;             // 16  TOGA_CFG_KEEP = leave, 0 = disable, 1 = enable (v4)
-  uint8_t  reserved2;           // 17  must be 0
+  uint8_t  followMask;          // 17  TOGA_FOLLOW_* bits, or TOGA_FOLLOW_KEEP = leave (v5)
+  uint16_t ledCount;            // 18  0 = keep; else 1D LED count (module sets w=n,h=1,reboot) (v5)
+  char     name[16];            // 20  name[0]=='\0' = keep; else rename, NUL-terminated (v5)
+  uint8_t  gap;                 // 36  0 = keep; 1 = every LED; N = light every Nth, blank N-1 (v7)
+  uint8_t  floorFlow;           // 37  TOGA_FLOOR_* (0/1/2), or TOGA_FLOOR_KEEP = leave (v8)
 };
-static_assert(sizeof(TogaModCfgMsg) == 18,       "TogaModCfgMsg layout drifted");
-static_assert(offsetof(TogaModCfgMsg, mac) == 8, "TogaModCfgMsg layout drifted");
+static_assert(sizeof(TogaModCfgMsg) == 38,           "TogaModCfgMsg layout drifted");
+static_assert(offsetof(TogaModCfgMsg, mac) == 8,     "TogaModCfgMsg layout drifted");
+static_assert(offsetof(TogaModCfgMsg, ledCount) == 18,"TogaModCfgMsg layout drifted");
+static_assert(offsetof(TogaModCfgMsg, name) == 20,   "TogaModCfgMsg layout drifted");
+static_assert(offsetof(TogaModCfgMsg, gap) == 36,    "TogaModCfgMsg layout drifted");
+static_assert(offsetof(TogaModCfgMsg, floorFlow) == 37, "TogaModCfgMsg layout drifted");
 
 static_assert(sizeof(TogaCmdMsg)   <= ESP_NOW_MAX_DATA_LEN, "cmd too big");
 static_assert(sizeof(TogaSyncMsg)  <= ESP_NOW_MAX_DATA_LEN, "sync too big");
@@ -448,7 +547,9 @@ static inline bool togaParseModCfg(const uint8_t* data, int len, const uint8_t m
 //  That is what makes OTA free: no trigger, no leaving the show (see toga_ota.h).
 //  It also means the installation needs no router at all — plug it in anywhere.
 // ══════════════════════════════════════════════════════════════════════
-#define TOGA_AP_SSID  "togalights"
+#define TOGA_AP_SSID  "togacontroller"   // the controller's AP; grid + modules join it.
+                                          // (Distinct from the module phone-hotspot
+                                          //  fallback 'togalights' — see module_config.h.)
 #define TOGA_AP_PASS  "andmagic"     // >= 8 chars, else softAP() silently opens the AP
 
 // CONTROLLER ONLY. Call BEFORE esp_now_init().

@@ -168,6 +168,7 @@ volatile bool     espStrobe       = false;
 volatile bool     espModeStrobe   = false;
 volatile bool     espCastleStrobe = false;
 volatile bool     espBlackout     = false;   // latched blackout (button 10); rides the flags like the strobes
+volatile bool     espSpot         = false;   // moving-spot key (phys 5); modules chase dots, wall drives a tunnel
 volatile uint8_t  espAutoMode     = TOGA_AUTO_OFF;   // 0 = off, 1..4 = mood (button 0)
 volatile uint32_t espLastHeartbeat = 0;
 static uint8_t    senderMAC[6]     = {};
@@ -183,6 +184,7 @@ void onReceive(const uint8_t* mac, const uint8_t* data, int len) {
   espModeStrobe    = (msg.flags & TOGA_F_MODE_STROBE)   != 0;
   espCastleStrobe  = (msg.flags & TOGA_F_CASTLE_STROBE) != 0;
   espBlackout      = (msg.flags & TOGA_F_BLACKOUT)      != 0;
+  espSpot          = (msg.flags & TOGA_F_SPOT)          != 0;
   espAutoMode      = (msg.autoMode<=TOGA_AUTO_COUNT) ? msg.autoMode : TOGA_AUTO_OFF;
   uint32_t rx = millis();
   espLastHeartbeat = rx;
@@ -372,7 +374,7 @@ void setup() {
   FastLED.setBrightness(cfg.brightness);
   clearAll();
 
-  togaWifiBegin("toga-grid");                        // STA on togalights (ch1) — bus AND network
+  togaWifiBegin("toga-grid");                        // STA on togacontroller (ch1) — bus AND network
   WiFi.macAddress(gMyMac);                           // before the cb goes live: it filters on this
   Serial.printf("Receiver MAC: %s  ch=%d\n", WiFi.macAddress().c_str(), TOGA_CHANNEL);
   if(esp_now_init() != ESP_OK) { Serial.println("ESP-NOW init failed!"); while(1) delay(1000); }
@@ -669,6 +671,8 @@ void loop() {
     sync.hueSpeed         = gHueSpeed;
     sync.strobeHue        = gStrobeHue;
     sync.strobeGapMs      = cfg.strobeGapMs;
+    sync.strobeOnMs       = cfg.strobeOnMs;        // mode/castle-strobe on/off — modules mirror these (v6)
+    sync.strobeOffMs      = cfg.strobeOffMs;       // so they flash the SAME rhythm as the wall, any strip length
     sync.beatMs           = (uint16_t)lroundf(bPeriod);     // live tempo, not the saved one
     // The phase we are RENDERING, latency compensation already folded in — so a
     // module lands on the same brightness as the grid without redoing the maths.
@@ -707,10 +711,15 @@ void loop() {
   }
 
   // ── Second strobe (button 13): flash static CASTLE / 2026, no scroll (Task 5) ──
+  // Absolute-time gate (togaSquareOn), NOT a chained `flip = now + on`: a slow
+  // FastLED.show() cannot stretch the period, so the wall and every module — of
+  // any strip length — flash this in lockstep. See togaSquareOn() in <toga_proto.h>.
+  static bool     csHeldPrev=false; static uint32_t csStart=0;
   bool castleHeld = senderAlive && espCastleStrobe;
+  if(castleHeld && !csHeldPrev) csStart=t;                 // phase origin: this press began here
+  csHeldPrev = castleHeld;
   if(castleHeld){
-    static bool csOn=true; static uint32_t csFlip=0;
-    if((int32_t)(t-csFlip)>=0){ csOn=!csOn; csFlip=t+(uint32_t)(csOn?cfg.strobeOnMs:cfg.strobeOffMs); }
+    bool csOn = togaSquareOn(t, csStart, cfg.strobeOnMs, cfg.strobeOffMs);
     FastLED.setBrightness(cfg.strobeBrightness);
     clearFrame();
     if(csOn){
@@ -722,10 +731,13 @@ void loop() {
   }
 
   // ── Mode strobe: flash the CURRENT animation on/off, a bit brighter (button 14) ──
+  // Absolute-time gate like the castle-strobe above — same length-independence.
+  static bool     msHeldPrev=false; static uint32_t msStart=0;
   bool modeStrobeHeld = senderAlive && espModeStrobe;
+  if(modeStrobeHeld && !msHeldPrev) msStart=t;   // phase origin: this press began here
+  msHeldPrev = modeStrobeHeld;
   if(modeStrobeHeld){
-    static bool msOn=true; static uint32_t msFlip=0;
-    if((int32_t)(t-msFlip)>=0){ msOn=!msOn; msFlip=t+(uint32_t)(msOn?cfg.strobeOnMs:cfg.strobeOffMs); }
+    bool msOn = togaSquareOn(t, msStart, cfg.strobeOnMs, cfg.strobeOffMs);
     if(!msOn){                                   // off phase → dark
       FastLED.clear();
       for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
@@ -744,6 +756,18 @@ void loop() {
     FastLED.clear();
     for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
     FastLED.show();
+    return;
+  }
+
+  // ── Spot tunnel: while the moving-spot key (phys 5, TOGA_F_SPOT) is held, the
+  //    wall drives through a tunnel of square frames growing centre → rim, in
+  //    time with the dots the modules are chasing down their strips. Sits below
+  //    blackout so a dark wall still wins; the underlying mode keeps evolving
+  //    (virtualT already advanced), so releasing snaps back to it. Real-time
+  //    clock inside, so the drive looks the same at any Speed.
+  if(senderAlive && espSpot){
+    gBaseBri = cfg.brightness;      // showGrid() scales this by the AGC gain
+    anim_spotTunnel(t);
     return;
   }
 

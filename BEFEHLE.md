@@ -19,7 +19,7 @@ sendet. Quellen: [`controller/controller.ino`](controller/controller.ino),
  │  Auto-Modus     │  Farbe          │  – frei –       │  Plus  +        │
  ├─────────────────┼─────────────────┼─────────────────┼─────────────────┤
  │ 13              │  9              │  5              │  1              │
- │  Helligkeit     │  Hue-Speed      │  – frei –       │  Minus  −       │
+ │  Helligkeit     │  Hue-Speed      │  Modul-Spot     │  Minus  −       │
  ├─────────────────┼─────────────────┼─────────────────┼─────────────────┤
  │ 14              │ 10              │  6              │  2              │
  │  Geschwindigk.  │  – frei –       │  Blackout       │  Beat-Match     │
@@ -29,10 +29,11 @@ sendet. Quellen: [`controller/controller.ino`](controller/controller.ino),
  └─────────────────┴─────────────────┴─────────────────┴─────────────────┘
 ```
 
-**Frei: 4 · 5 · 10** — drei Tasten für neue Funktionen
+**Frei: 4 · 10** — zwei Tasten für neue Funktionen
 (siehe offene Punkte in [TODO.md](TODO.md): Reset-Kombi, globales Strobe,
-Color-Switching). Taste **6** ist jetzt **Blackout** (siehe unten). OTA braucht
-keine davon — es läuft dauerhaft, ohne Trigger (Abschnitt 9).
+Color-Switching). Taste **6** ist jetzt **Blackout**, Taste **5** ist jetzt
+**Modul-Spot** (beide siehe unten). OTA braucht keine davon — es läuft dauerhaft,
+ohne Trigger (Abschnitt 9).
 
 ### Navigation
 
@@ -97,6 +98,23 @@ die Datenleitung, nicht der Takt.
 Module – bei den Modulen greift der Deckel nach deren Gain-Trim, ein Modul auf
 200 % Gain blitzt also nicht heller als die Wand. Castle-Strobe (11) und
 Modus-Strobe (7) sind davon nicht betroffen.
+
+### Modul-Spot (Taste 5) — momentary, nur Module
+
+**Solange gehalten** zeigen **alle mit der Control Unit verbundenen Module** einen
+einzelnen hellen **Laufpunkt**, der mit kurzem warmem Schweif über den Strip
+wandert (bei Panel-Modulen ein wandernder senkrechter Balken). Das **Grid bleibt
+unberührt** und läuft in seinem aktuellen Modus weiter. Loslassen → jedes Modul
+kehrt binnen ~100 ms zu seinem vorherigen Effekt zurück.
+
+Läuft — wie die Strobes — über ein momentanes Flag (`TOGA_F_SPOT`), das auf jedem
+Paket inkl. Heartbeat mitreist; **kein NVS-Schreiben**. Der eigene Rendercode
+`renderSpot()` liegt in [`module_effects.h`](module/module_effects.h) und ist kein
+`MODE_TABLE`-Eintrag. Die **Geschwindigkeit** (Taste 14) skaliert das Tempo des
+Punkts mit; Strobe/Castle/Modus-Strobe/Blackout haben Vorrang. Alle Module folgen
+unabhängig von ihrer Follow-Maske (Absicht: **alle** verbundenen Module).
+
+> Neu geflasht werden müssen **Control Unit und alle Module**; das Grid nicht.
 
 ### Auto-Modus (Taste 12)
 

@@ -36,6 +36,45 @@ void anim_squareTunnel(uint32_t t) {
   showGrid();
 }
 
+// Light the four corners of a grid square. drawGridSquare() runs each border
+// strictly BETWEEN the intersection LEDs, so the corner LEDs (at INTS[]) are
+// left dark — which reads as a square with gaps at the corners. Fill both the
+// horizontal- and vertical-strip LED at each of the four crossings so the
+// outline closes.
+void drawSquareCorners(int r1,int c1,int r2,int c2,CRGB col){
+  setLED(false,r1,INTS[c1-1],col); setLED(false,r1,INTS[c2-1],col);   // top strip: left/right corner
+  setLED(false,r2,INTS[c1-1],col); setLED(false,r2,INTS[c2-1],col);   // bottom strip
+  setLED(true, c1,INTS[r1-1],col); setLED(true, c1,INTS[r2-1],col);   // left strip: top/bottom corner
+  setLED(true, c2,INTS[r1-1],col); setLED(true, c2,INTS[r2-1],col);   // right strip
+}
+
+// SPOT TUNNEL — controller phys key 5 (TOGA_F_SPOT) override, NOT a mode.
+// While the moving-spot key is held the modules chase bright dots down their
+// strips; the wall drives one square that is born at the centre and grows out
+// to full grid size, then dissolves at the rim and starts again — a single
+// frame rushing toward you, so it reads as driving "through" something. Real-
+// time clock (millis), so the drive speed is the same at any Speed-knob
+// setting. Colour still answers the Color knob: showGrid() rotates every hue.
+void anim_spotTunnel(uint32_t t) {
+  float tf    = t*0.001f;
+  float period= 1.5f;                        // seconds per expansion (matches the floor-spot period)
+  float phase = fmodf(tf/period, 1.0f);      // 0..1: one square, centre → rim
+  FastLED.clear();
+  for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
+  int half = (int)(phase*6.0f); half = constrain(half,0,5);   // 0..5 → centre cell .. full wall
+  int r1=6-half, r2=7+half, c1=6-half, c2=7+half;
+  // Brightens as it grows (dim little square at birth → bright as it fills the
+  // wall), then a quick fade over the last stretch so it melts at the rim.
+  float fade = phase<0.85f ? (0.30f+0.70f*(phase/0.85f)) : (1.0f-(phase-0.85f)/0.15f);
+  uint8_t b   = (uint8_t)(constrain(fade,0.0f,1.0f)*235.0f); if(b<3){ showGrid(); return; }
+  uint8_t hue = (uint8_t)(tf*30.0f);
+  uint8_t sat = (uint8_t)constrain(220-(int)(phase*140.0f),80,255);   // whiter as it nears (headlight glare)
+  CRGB col = CRGB(CHSV(hue,sat,b));
+  drawGridSquare(r1,c1,r2,c2,col);
+  drawSquareCorners(r1,c1,r2,c2,col);
+  showGrid();
+}
+
 // 36. CONCENTRIC SQUARE PULSE
 // Square frames expand outward from center like sonar pings.
 // Multiple overlapping pulses, smooth brightness wave.
