@@ -25,6 +25,7 @@ uint8_t seg7(char c);
 void drawGlyph1(uint8_t s,int topR,int C,CRGB col);
 void drawText1Centered(const char* s,int topR,CRGB col);
 void triggerOverlay(uint32_t t,int idx);
+void triggerOverlayMood(uint32_t t,uint8_t mood);
 void drawNumberTopRight(uint32_t t);
 void anim_heartbeat(uint32_t t);
 void anim_binaryRain(uint32_t t,float dt);

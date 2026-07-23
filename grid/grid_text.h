@@ -129,22 +129,61 @@ void drawText1Centered(const char* s,int topR,CRGB col){
 }
 #define TEXT_TOP 4          // top node row for banner text (glyphs 2 cells tall → rows 4..6)
 
-// ── Mode-change readout: flash the mode NUMBER in the top-right
-//    corner for ~0.5s, drawn ON TOP of the running animation. ──
+// ── Mode-change readout: the mode NUMBER in the top-right corner for ~0.5s,
+//    drawn INTO the frame by showGrid() (see the forward-declares in grid.ino).
+//    It used to be painted after the animation's show() and pushed with a second
+//    FastLED.show(); at 10-15ms per show that left it dark for half of every
+//    frame, which read as a hard strobe. It is a readout, not an event — it
+//    should sit there quietly and go away. ──
 uint32_t overlayUntil=0;
-char     overlayNum[4];     // "40"
+char     overlayNum[4];     // "40" (mode) or "A2" (auto mood)
+uint8_t  overlayMood=0;     // 0 = mode readout (white), 1..4 = that mood's colour
 void triggerOverlay(uint32_t t,int idx){
   int n=idx+1; char* p=overlayNum;
   if(n>=10) *p++=(char)('0'+n/10);
   *p++=(char)('0'+n%10); *p=0;
+  overlayMood=0;
   overlayUntil=t+500;        // number flashes ~0.5s, top-right, over the animation
 }
-// Draw the mode number small in the top-right (rows 0..2), on top of the frame.
-// Plain, slightly dimmed white — drawn after showGrid(), so the global hue
-// rotation never tints it. Tune NUM_WHITE if it reads too bright/dim.
-#define NUM_WHITE 150
+// The auto mood (button 0) reads out as "A1".."A4" in that mood's own colour —
+// the same colour button 0 is blinking in, so the wall and the controller can
+// never name the same mood differently.
+//
+// The "A" carries the identity, not the colour: "A2" and mode 2 would otherwise
+// differ by hue alone, and the tint walks the mood hues onto each other (mood 2
+// at tint 150 lands on mood 4's own green). The colour is the link to the
+// button; the letter is what makes the readout unambiguous.
+//
+// Held twice as long as the mode number: it answers "what did I just press" on
+// a button that only ever counts up 1→2→3→4→1 and never shows where it stopped.
+#define AUTO_MS 1000
+void triggerOverlayMood(uint32_t t,uint8_t mood){
+  if(mood<1||mood>TOGA_AUTO_COUNT) return;
+  overlayNum[0]='A'; overlayNum[1]=(char)('0'+mood); overlayNum[2]=0;
+  overlayMood=mood;
+  overlayUntil=t+AUTO_MS;
+}
+// Draw the mode number small in the top-right (rows 0..2), into the frame.
+// Plain white, deliberately dim: it is drawn AFTER the AGC has measured the
+// frame, so it never gets dimmed along with a bright mode — at 150 it was the
+// brightest thing on the wall on every mode change. Tune NUM_WHITE alone if it
+// reads too bright or too faint; it is the only knob for this.
+//
+// AUTO_V is the same knob for the mood readout, and it is higher for a reason:
+// a fully saturated hue at NUM_WHITE lights one channel where white lights
+// three, so at 70 it would read as a third of the brightness. It is not a
+// second opinion about how bright the corner should be.
+#define NUM_WHITE 70
+#define AUTO_V   160
 void drawNumberTopRight(uint32_t t){
+  // Colour resolved HERE, not at trigger time: hueAuto rotates continuously, and
+  // button 0 wears the tint live. Latching it would leave the wall on a stale
+  // hue for the whole second while the button turned — at the top of the Hue-
+  // Speed dial that is three full revolutions of disagreement.
+  CRGB col(NUM_WHITE,NUM_WHITE,NUM_WHITE);
+  if(overlayMood)
+    col=CRGB(CHSV((uint8_t)(TOGA_AUTO_HUE[overlayMood-1]+gHueBase+gHueAuto),255,AUTO_V));
   int w=textLenNodes(overlayNum);           // node-cols (3 per digit incl. gap)
   int leftC=11-w; if(leftC<0) leftC=0;       // right-aligned, ~1 node margin
-  drawTextCells(overlayNum,leftC,0,CRGB(NUM_WHITE,NUM_WHITE,NUM_WHITE));
+  drawTextCells(overlayNum,leftC,0,col);
 }

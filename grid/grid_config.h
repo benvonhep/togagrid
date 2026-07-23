@@ -1,9 +1,24 @@
 // ══════════════════════════════════════════════════════════════
 //  grid_config.h — central tunable constants for the LED grid.
 //  This is the one place to adjust hardware, geometry, brightness
-//  and timing. (#included first by grid_SW.ino; do not compile alone.)
+//  and timing. (#included first by grid.ino; do not compile alone.)
+//
+//  Constants the grid SHARES with the modules (brightness cap and step,
+//  beat-glow shape, strobe timing, heartbeat timeout) live in
+//  <toga_proto.h>, not here — they must match exactly across nodes.
 // ══════════════════════════════════════════════════════════════
 #pragma once
+
+#include <toga_proto.h>
+
+// FastLED 3.10.x breaks ESP-NOW / the controller link on this project, and
+// the failure is a silent one. Refuse to build against anything else.
+#if FASTLED_VERSION != 3006000
+#error "Pinned to FastLED 3.6.0 — 3.10.x breaks ESP-NOW/controller here."
+#endif
+
+// Which broadcasts this node acts on (group 0 = everyone is always accepted).
+#define MY_TOGA_GROUP TOGA_GROUP_GRID
 
 // ── LED hardware ──
 #define LEDS_ACTIVE    121   // lit LEDs per strip
@@ -31,10 +46,8 @@
 #define ANIM_DURATION 10000  // (reserved)
 
 // ── Brightness ──
+// MAX_BRIGHTNESS / BRI_DEFAULT / BRI_STEP: see <toga_proto.h> (shared with modules)
 #define BRIGHTNESS      40   // startup brightness
-#define MAX_BRIGHTNESS 128   // hard cap (~50% — white/yellow stays safe)
-#define BRI_DEFAULT     40   // default per-mode brightness for untouched modes
-#define BRI_STEP         5   // +/- step when adjusting brightness
 
 // ── Auto brightness normalization (AGC): consistent perceived brightness across modes ──
 #define AGC_TARGET  45.0f    // target avg (sum-of-channels per pixel); tune on hardware
@@ -43,25 +56,18 @@
 #define AGC_K       0.05f    // smoothing per frame (~0.4s); preserves intended pulses
 
 // ── Beat-Glow (tap-tempo pulse laid over the animations) ──
-#define BEAT_MIN    0.45f   // dimmest point between beats (1.0 = no pulse at all)
-#define BEAT_DECAY  3.5f    // pulse shape: higher = snappier flash, lower = softer breathing
-#define BEAT_RAMP   0.02f   // how gradually a newly tapped tempo is adopted (~1 s)
-#define BEAT_MIN_MS 200     // fastest accepted beat (300 BPM)
-#define BEAT_MAX_MS 3000    // slowest accepted beat (20 BPM)
+// Shape + range shared with the modules — BEAT_MIN / BEAT_MIN_MS / BEAT_MAX_MS /
+// BEAT_LATENCY_MS / togaBeatFactor(): see <toga_proto.h>.
+// The tap-tempo detection itself (debounce, lock, phase) is grid-only: grid_beat.h
 
 // ── Strobe / controller input steps & timing ──
-#define STROBE_BRI_STEP   10
-#define STROBE_FREQ_STEP   2
-#define STROBE_SQ_STEP     1
 // Button-15 strobe: flash as short as the LED refresh allows, gap is user-tunable
 // (hold 15 + press +/-). A full FastLED.show() of all 12 strips takes ~10-15ms,
 // so the flash cannot physically get much shorter than STROBE_FLASH_MS.
-#define STROBE_FLASH_MS   10   // fixed, minimal flash length
-#define STROBE_GAP_DEF    90   // default gap between flashes (ms)
-#define STROBE_GAP_MIN    30   // shortest gap  (~fastest strobe)
-#define STROBE_GAP_MAX   250   // longest gap   (~slowest strobe)
-#define STROBE_GAP_STEP    5   // +/- step size
-#define HEARTBEAT_TIMEOUT 400  // ms; sender considered gone after this
+// STROBE_FLASH_MS / STROBE_GAP_* / HEARTBEAT_TIMEOUT: see <toga_proto.h>
+#define STROBE_BRI_STEP   10
+#define STROBE_FREQ_STEP   2
+#define STROBE_SQ_STEP     1
 #define REPEAT_DELAY      500  // ms before key auto-repeat
 #define REPEAT_RATE        80  // ms between repeats
 
