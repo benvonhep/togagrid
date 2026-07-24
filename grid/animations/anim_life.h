@@ -534,28 +534,53 @@ void anim_strangeAttractor(uint32_t t,float dt){
     for(int i=0;i<LOR_TRAIL;i++){lorTX[i]=lorX;lorTY[i]=lorY;lorTZ[i]=lorZ;}
     lorInit=true;lorLastMutate=t;
   }
-  // Run attractor steps (fast, just float math)
-  float dtS=dt*0.001f*8.0f; // speed up time
-  int steps=5;
+  float tf=t*0.001f;
+
+  // How much attractor-time to advance this frame — scales with the passed-in
+  // (speed-scaled) dt, so high speed = the trajectory really travels further.
+  float advance=dt*0.001f*8.0f;
+  if(advance>0.8f)advance=0.8f;   // guard against huge frame gaps / runaway
+
+  // Keep each Euler sub-step SMALL and stable no matter how fast we go. The old
+  // code used a fixed 5 steps, so at high speed each step was huge → the Lorenz
+  // integration blew up, constrain() pinned it to a corner, and it looked stuck.
+  const float subDt=0.008f;
+  int steps=(int)(advance/subDt)+1;
+  if(steps<3)steps=3;
+  if(steps>64)steps=64;           // CPU guard
+  float sdt=advance/steps;
+
+  // Continuous morphing of the attractor parameters so the butterfly keeps
+  // breathing/reshaping even when the trajectory is looping — never a fixed loop.
+  float effSigma=lorSigma+1.6f*sinf(tf*0.037f+1.3f);
+  float effRho  =lorRho  +3.5f*sinf(tf*0.051f);
+  float effBeta =lorBeta +0.35f*sinf(tf*0.023f+2.1f);
+  if(effRho<24.5f)effRho=24.5f;   // stay in the chaotic regime (no collapse)
+
   for(int s=0;s<steps;s++){
-    float dx=lorSigma*(lorY-lorX);
-    float dy=lorX*(lorRho-lorZ)-lorY;
-    float dz=lorX*lorY-lorBeta*lorZ;
-    lorX+=dx*dtS/steps; lorY+=dy*dtS/steps; lorZ+=dz*dtS/steps;
+    float dx=effSigma*(lorY-lorX);
+    float dy=lorX*(effRho-lorZ)-lorY;
+    float dz=lorX*lorY-effBeta*lorZ;
+    lorX+=dx*sdt; lorY+=dy*sdt; lorZ+=dz*sdt;
     // Prevent explosion
     lorX=constrain(lorX,-40.0f,40.0f);lorY=constrain(lorY,-40.0f,40.0f);lorZ=constrain(lorZ,0.0f,60.0f);
   }
   lorTX[lorTIdx]=lorX; lorTY[lorTIdx]=lorY; lorTZ[lorTIdx]=lorZ;
   lorTIdx=(lorTIdx+1)%LOR_TRAIL;
 
-  // Drift parameters slowly — changes attractor shape
+  // Drift parameter targets slowly — changes attractor shape over the long run
   lorSigma+=(lorSigmaT-lorSigma)*0.0001f*dt;
   lorRho  +=(lorRhoT  -lorRho  )*0.0001f*dt;
   if(t-lorLastMutate>15000+random(10000)){
     lorSigmaT=8.0f+random(8)*0.5f;   // 8..12
-    lorRhoT  =20.0f+random(20)*0.5f; // 20..30
+    lorRhoT  =26.0f+random(16)*0.5f; // 26..34 (kept in chaotic band)
     lorLastMutate=t;
   }
+
+  // Gentle continuous rotation of the projection — a slow drift so the whole
+  // shape keeps turning and feels alive; scales a touch with speed via advance.
+  float rot=tf*0.06f+advance*0.4f;
+  float cr=cosf(rot),sr=sinf(rot);
 
   // Render trail onto strips
   FastLED.clear();
@@ -564,13 +589,16 @@ void anim_strangeAttractor(uint32_t t,float dt){
   for(int i=0;i<LOR_TRAIL;i++){
     int idx=(lorTIdx+i)%LOR_TRAIL;
     float age=(float)i/LOR_TRAIL; // 0=oldest, 1=newest
-    float px=lorTX[idx]*1.1f;    // X position → X strip space (-51..51)
-    float py=lorTY[idx]*1.1f;    // Y position → LED position
+    float rx=lorTX[idx]*1.1f;     // X position → X strip space (-51..51)
+    float ry=lorTY[idx]*1.1f;     // Y position → LED position
+    // Apply the slow rotation drift in the projection plane
+    float px=rx*cr-ry*sr;
+    float py=rx*sr+ry*cr;
     // pz drives colour
     float pz=lorTZ[idx]/60.0f;   // 0..1
 
     uint8_t bri=(uint8_t)(age*age*200.0f);
-    uint8_t hue=(uint8_t)(pz*180.0f+age*40.0f);
+    uint8_t hue=(uint8_t)(pz*180.0f+age*40.0f+tf*6.0f);
 
     // Project onto nearest X strip
     for(int xi=0;xi<12;xi++){
@@ -896,4 +924,3 @@ void anim_plasmaLightning(uint32_t t,float dt){
   showGrid();
 }
 
-void anim_agentField(uint32_t t,float dt){ anim_plasmaLightning(t,dt); }

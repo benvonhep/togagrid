@@ -21,92 +21,92 @@ void anim_warp(uint32_t at){
     fxStreak(c*r0,s*r0,c*r,s*r,0.4f,1.0f,hotColor(br,160,28)); }
   showGrid();
 }
-// 61 — ASTEROIDS: rocks drifting across on linear paths, with a spinning glint.
-void anim_asteroids(uint32_t at){
-  clearFrame(); float tf=at*0.001f;
-  for(int i=0;i<5;i++){ float sp=0.05f+fxhash(i*2.1f)*0.05f; float ph=fxfract(tf*sp+fxhash(i*5.3f));
-    float x=-64.0f+ph*128.0f; float y=(fxhash(i*7.7f)-0.5f)*90.0f; float rad=3.0f+fxhash(i*9.1f)*3.0f;
-    fxSplat(x,y,rad,1.3f,CRGB(70,64,58));
-    fxSplat(x+cosf(tf*2.0f+i)*rad*0.4f,y+sinf(tf*2.0f+i)*rad*0.4f,0.6f,1.0f,CRGB(155,155,165)); }
-  showGrid();
-}
-// 62 — SHOOTING STARS: faint twinkling sky + occasional bright streaks.
+// 62 — SHOOTING STARS: faint twinkling sky + ONE fast comet in a random direction.
 void anim_shootingStars(uint32_t at){
   clearFrame(); float tf=at*0.001f;
   for(int i=0;i<45;i++){ float x=(fxhash(i*1.3f)-0.5f)*120,y=(fxhash(i*2.7f)-0.5f)*120;
     float tw=0.4f+0.6f*fabsf(sinf(tf*2.0f+i)); fxSplat(x,y,0.35f,0.9f,hotColor(tw*0.35f,150,22)); }
-  for(int i=0;i<3;i++){ float ph=fxfract(tf*0.4f+fxhash(i*11.1f));
-    float x0=-60+fxhash(i*4.4f)*30,y0=-50+fxhash(i*6.6f)*100; float ang=-0.5f+fxhash(i*8.8f)*0.4f; float c=cosf(ang),s=sinf(ang);
-    float head=ph*150.0f,tail=head-22.0f; if(tail<0)tail=0; float br=(1.0f-ph); if(ph<0.1f)br=ph*10.0f;
-    fxStreak(x0+c*tail,y0+s*tail,x0+c*head,y0+s*head,0.5f,1.1f,hotColor(br,150,20)); }
+  // Exactly ONE shooting star at a time — WAY faster, fresh random direction each spawn.
+  static int curCycle=-1; static float ang=0.0f, sx=0.0f, sy=0.0f, hue=150.0f;
+  const float speed=2.6f;                    // cycles/sec (was ~0.4) → much faster streaks
+  float pcont=tf*speed; int cycle=(int)pcont; float ph=pcont-cycle;
+  if(cycle!=curCycle){ curCycle=cycle;
+    ang=frand()*6.2832f;                     // brand-new random heading
+    float c=cosf(ang),s=sinf(ang);
+    sx=-c*82.0f + (frand()-0.5f)*36.0f;      // start off-panel, opposite the travel dir
+    sy=-s*82.0f + (frand()-0.5f)*36.0f;
+    hue=140.0f+frand()*40.0f;
+  }
+  float c=cosf(ang),s=sinf(ang);
+  float head=ph*210.0f, tail=head-26.0f; if(tail<0)tail=0;
+  float br=(1.0f-ph); if(ph<0.1f)br=ph*10.0f;
+  float hx=sx+c*head, hy=sy+s*head, tx=sx+c*tail, ty=sy+s*tail;
+  fxStreak(tx,ty,hx,hy,0.5f,1.2f,hotColor(br*0.8f,(uint8_t)hue,20));   // tail behind travel dir
+  fxSplat(hx,hy,1.2f,1.3f,hotColor(br,(uint8_t)hue,30));               // bright comet head
   showGrid();
 }
-// 63 — BLACK HOLE: dark core, bright swirling accretion ring.
+// 63 — HYPER VORTEX: a swirling kaleidoscopic plasma tunnel of flowing colour.
+//      (Rewritten wholesale — mesmerizing showpiece, not the old accretion ring.)
 void anim_blackHole2(uint32_t at){
   clearFrame(); float tf=at*0.001f;
-  fxRing(0,0,15.0f,2.0f,1.4f,CRGB(CHSV(28,255,255)));
-  fxRing(0,0,20.0f,1.0f,1.4f,CRGB(CHSV(20,255,130)));
-  for(int i=0;i<10;i++){ float a=tf*1.6f+i*0.628f; float r=15.0f+sinf(tf*3+i)*1.5f;
-    fxSplat(cosf(a)*r,sinf(a)*r,1.0f,1.0f,CRGB(CHSV(40,220,255))); }
+  for(int pass=0;pass<2;pass++) for(int s=0;s<12;s++){ float base=pass?Y_POS[s]:X_POS[s];
+    for(int n=1;n<=121;n++){ float other=(float)n-CENTER;
+      float x=pass?other:base, y=pass?base:other;
+      float r=sqrtf(x*x+y*y); if(r>72.0f) continue;
+      float th=atan2f(y,x);
+      // spiralling arms: angle winds up with radius and time
+      float swirl = th*5.0f + r*0.30f - tf*2.6f;
+      float spiral= sinf(swirl);
+      // interference rings pulsing outward, warped by a 6-fold kaleidoscope fold
+      float rings = sinf(r*0.52f - tf*3.4f + 2.0f*sinf(th*3.0f + tf));
+      float plasma= 0.5f*spiral + 0.5f*rings;
+      float v = 0.5f + 0.5f*plasma; v*=v;                    // punchier contrast
+      float env = constrain(1.0f - r/72.0f, 0.0f, 1.0f);
+      env = env*env*(3.0f-2.0f*env);                         // smooth radial falloff
+      v *= env;
+      // hues flow around the wheel with angle + radius + time + the plasma itself
+      uint8_t hue = (uint8_t)(th*40.7f + r*3.0f + tf*46.0f + 120.0f*spiral);
+      uint8_t sat = (uint8_t)(210.0f - 90.0f*v);             // hot cores bleach toward white
+      if(v>0.02f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(hue,sat,255)),v);
+    } }
+  // pulsing vortex eye + a colour-cycling shockwave ring
+  float pulse=0.6f+0.4f*sinf(tf*3.0f);
+  fxSplat(0,0,2.0f+pulse*2.2f,3.0f,CRGB(255,244,255));
+  fxRing(0,0,9.0f+4.0f*sinf(tf*1.7f),1.4f,1.8f,CRGB(CHSV((uint8_t)(tf*60.0f),200,255)));
   showGrid();
 }
-// 64 — PULSAR: rotating twin beams from a bright core.
+// 64 — PULSAR: rotating twin beams + a fanned trail of dimmer shadow echoes.
 void anim_pulsar2(uint32_t at){
   clearFrame(); float tf=at*0.001f; float base=tf*2.4f;
   fxSplat(0,0,2.5f,1.2f,CRGB(200,220,255));
+  // several trailing "shadow" strings, each at greater angular lag and dimmer
+  const int NSHAD=5;
+  for(int sh=NSHAD;sh>=1;sh--){ float lag=0.15f*sh; float dim=1.0f-(float)sh/(NSHAD+1);
+    for(int b=0;b<2;b++){ float a=base-lag+b*3.1416f; for(int k=3;k<=14;k++){ float rr=k*4.4f;
+      fxSplat(cosf(a)*rr,sinf(a)*rr,0.5f,1.0f,CRGB(CHSV(160,150,(uint8_t)(60.0f*dim)))); } } }
+  // main beams on top (brightest)
   for(int b=0;b<2;b++){ float a=base+b*3.1416f; for(int k=1;k<=14;k++){ float rr=k*4.4f; float br=(1.0f-k/15.0f);
     fxSplat(cosf(a)*rr,sinf(a)*rr,0.7f,1.0f,hotColor(br,160,26)); } }
-  for(int b=0;b<2;b++){ float a=base-0.28f+b*3.1416f; for(int k=3;k<=14;k++){ float rr=k*4.4f;
-    fxSplat(cosf(a)*rr,sinf(a)*rr,0.5f,1.0f,CRGB(CHSV(160,150,40))); } }
   showGrid();
 }
-// 65 — PULSAR WIND NEBULA: pulsar beams inside a diffuse glow cloud.
-void anim_pulsarNebula(uint32_t at){
-  clearFrame(); float tf=at*0.001f;
-  fxNebula(at,180,200,180,40,44,0.9f);
-  float a=tf*2.0f; fxSplat(0,0,2.0f,1.0f,CRGB(220,230,255));
-  for(int b=0;b<2;b++){ float aa=a+b*3.1416f; for(int k=1;k<=12;k++){ float rr=k*3.6f; float br=1.0f-k/13.0f;
-    fxSplat(cosf(aa)*rr,sinf(aa)*rr,0.6f,1.0f,hotColor(br,150,26)); } }
-  showGrid();
-}
-// 66 — ORION NEBULA: layered gas clouds + embedded stars.
-void anim_orionNebula(uint32_t at){
-  clearFrame();
-  fxNebula(at,155,190,150,30,48,0.9f);
-  fxNebula(at,215,160,220,45,30,0.8f);
-  fxNebula(at,20,130,300,60,16,0.7f);
-  for(int i=0;i<6;i++) fxSplat((fxhash(i*3.3f)-0.5f)*70,(fxhash(i*5.1f)-0.5f)*70,0.5f,0.9f,hotColor(0.88f,150,18));
-  showGrid();
-}
-// 67 — HORSEHEAD: dark silhouette against a glowing backdrop.
+// 67 — HORSEHEAD: dark silhouette galloping against a glowing backdrop.
 void anim_horsehead(uint32_t at){
-  clearFrame();
+  clearFrame(); float tf=at*0.001f;
+  // galloping gait: two-beat vertical bob (fabsf doubles the cadence) + fore/aft sway + head nod
+  float bob =2.8f*fabsf(sinf(tf*6.0f)) - 1.2f;
+  float sway=1.6f*sinf(tf*3.0f);
+  float tilt=0.10f*sinf(tf*6.0f+1.0f);
   for(int pass=0;pass<2;pass++) for(int s=0;s<12;s++){ float base=pass?Y_POS[s]:X_POS[s];
     for(int n=1;n<=121;n++){ float other=(float)n-CENTER; float x=pass?other:base,y=pass?base:other;
       uint8_t nz=inoise8((uint16_t)((x+80)*160),(uint16_t)((y+80)*160),(uint16_t)(at*25));
       float glow=(nz/255.0f); glow=glow*glow; float grad=constrain((y+50)/100.0f,0.0f,1.0f);
       float v=glow*(0.35f+0.65f*grad)*0.9f;
-      float headTop=-6.0f-10.0f*expf(-((x+4)*(x+4))/60.0f);
-      if(x>-16 && x<8 && y>headTop) v*=0.04f;                 // silhouette stays near-black
+      // move the silhouette each frame so the horse looks like it is running
+      float hx=x-sway, hy=y-bob - tilt*(x+4.0f);
+      float headTop=-6.0f-10.0f*expf(-((hx+4)*(hx+4))/60.0f);
+      if(hx>-16 && hx<8 && hy>headTop) v*=0.04f;              // silhouette stays near-black
       if(v>0.02f) fxAdd(pass?false:true,s+1,n,hotTint(v,24,20),v);
     } }
-  showGrid();
-}
-// 68 — TWIN STARS: a binary pair orbiting, joined by a faint gas bridge.
-void anim_twinStars(uint32_t at){
-  clearFrame(); float tf=at*0.001f; float a=tf*1.3f; float R=22.0f;
-  float x1=cosf(a)*R,y1=sinf(a)*R,x2=-x1,y2=-y1;
-  fxStreak(x1,y1,x2,y2,0.8f,2.2f,CRGB(CHSV(280,150,40)));
-  fxSplat(x1,y1,7.0f,4.0f,CRGB(CHSV(30,180,110))); fxSplat(x1,y1,2.2f,1.2f,CRGB(CHSV(35,120,255)));
-  fxSplat(x2,y2,7.0f,4.0f,CRGB(CHSV(150,180,110))); fxSplat(x2,y2,2.2f,1.2f,CRGB(CHSV(150,120,255)));
-  showGrid();
-}
-// 69 — PLANETS: soft-shaded worlds drifting past.
-void anim_planets(uint32_t at){
-  clearFrame(); float tf=at*0.001f;
-  for(int i=0;i<20;i++) fxSplat((fxhash(i*1.7f)-0.5f)*120,(fxhash(i*3.9f)-0.5f)*120,0.3f,0.8f,CRGB(CHSV(150,20,90)));
-  fxPlanet(-16+sinf(tf*0.2f)*6,-8+cosf(tf*0.15f)*5,12,20,210,0.8f,-0.3f,(uint16_t)(at*20));
-  fxPlanet(20+sinf(tf*0.13f)*5,14+cosf(tf*0.17f)*6,8,150,220,0.6f,-0.5f,(uint16_t)(at*26));
   showGrid();
 }
 // 70 — ROTATING EARTH through a window: shaded globe with scrolling continents.
@@ -121,15 +121,6 @@ void anim_earthWindow(uint32_t at){
       if(v>0.02f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(hue,sat,255)),v);
     } }
   fxRing(0,0,40.0f,3.0f,1.4f,CRGB(40,40,48));      // window frame vignette
-  showGrid();
-}
-// 71 — STARSHIP PANEL: a grid of indicator glows blinking at varied rates.
-void anim_shipPanel(uint32_t at){
-  clearFrame(); float tf=at*0.001f;
-  for(int gy=0;gy<4;gy++)for(int gx=0;gx<5;gx++){ int i=gy*5+gx; float px=-40+gx*20.0f,py=-30+gy*20.0f;
-    float rate=0.5f+fxhash(i*2.1f)*3.0f; float ph=fabsf(sinf(tf*rate+fxhash(i*4.4f)*6.28f));
-    uint8_t hue=(i%3==0)?0:(i%3==1)?90:150;
-    fxSplat(px,py,2.4f,1.1f,hotColor(0.157f+ph*0.843f,hue,16)); }
   showGrid();
 }
 // 72 — RADAR: sweeping beam (soft leading edge) + ships that flash when swept.
@@ -157,33 +148,80 @@ void anim_sineWaves(uint32_t at){
     } }
   showGrid();
 }
-// 74 — ROCKET FIRE: an upward plume of hot particles cooling as they rise.
+// 74 — ROCKET FIRE: a wide rocket riding a big flame plume with billowing smoke.
 void anim_rocketFire(uint32_t at){
   clearFrame(); float tf=at*0.001f;
-  for(int i=0;i<50;i++){ float ph=fxfract(tf*0.9f+fxhash(i*2.7f));
-    float x=(fxhash(i*3.1f)-0.5f)*10.0f*(0.3f+ph); float y=-42.0f+ph*90.0f; float life=1.0f-ph;
-    uint8_t hue=(uint8_t)(45*life),val=(uint8_t)(255*life),sat=ph<0.15f?120:255;
-    fxSplat(x,y,0.7f+ph*1.4f,1.1f,CRGB(CHSV(hue,sat,val))); }
-  fxSplat(0,-42,2.2f,1.3f,CRGB(255,240,210));
+  // ── smoke: clouds billowing out below the exhaust ──
+  for(int i=0;i<44;i++){ float ph=fxfract(tf*0.5f+fxhash(i*5.5f));
+    float x=(fxhash(i*1.7f)-0.5f)*48.0f*(0.4f+ph); float y=-28.0f-ph*30.0f;
+    uint8_t g=(uint8_t)((70.0f+fxhash(i*8.3f)*60.0f)*(1.0f-ph));
+    if(g>4) fxSplat(x,y,2.0f+ph*4.2f,2.4f,CRGB(g,g,g)); }
+  // ── fire: big hot plume shooting down from the throat ──
+  for(int i=0;i<90;i++){ float ph=fxfract(tf*1.3f+fxhash(i*2.7f));
+    float x=(fxhash(i*3.1f)-0.5f)*20.0f*(0.3f+ph); float y=-6.0f-ph*54.0f; float life=1.0f-ph;
+    uint8_t hue=(uint8_t)(45*life),val=(uint8_t)(255*life),sat=ph<0.2f?110:255;
+    fxSplat(x,y,1.0f+ph*2.2f,1.2f,CRGB(CHSV(hue,sat,val))); }
+  for(int j=0;j<6;j++) fxSplat((frand()-0.5f)*6.0f,-6.0f-frand()*3.0f,2.6f,1.4f,CRGB(255,245,220)); // bright throat
+  // ── wide rocket body + nose cone ──
+  const float W=10.0f;                         // half-width — noticeably wider
+  for(int pass=0;pass<2;pass++) for(int s=0;s<12;s++){ float base=pass?Y_POS[s]:X_POS[s];
+    for(int n=1;n<=121;n++){ float other=(float)n-CENTER; float x=pass?other:base,y=pass?base:other;
+      float v=0.0f; uint8_t hue=160,sat=30;
+      if(y>-2.0f && y<34.0f && fabsf(x)<W){ v=1.0f-0.5f*fabsf(x)/W; }                  // cylinder body
+      else if(y>=34.0f && y<50.0f){ float w=W*(1.0f-(y-34.0f)/16.0f);                 // nose cone
+        if(fabsf(x)<w){ v=0.9f*(1.0f-0.5f*fabsf(x)/(w+0.01f)); hue=0; sat=200; } }
+      if(v>0.02f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(hue,sat,(uint8_t)(v*255.0f))),v);
+    } }
+  fxStreak(-W,-2,-W-6,-8,0.6f,1.2f,CRGB(200,20,20));   // fins
+  fxStreak( W,-2, W+6,-8,0.6f,1.2f,CRGB(200,20,20));
+  fxSplat(0,20,2.4f,1.2f,CRGB(120,200,255));           // window
   showGrid();
 }
-// 75 — WARNING LIGHT: a rotating amber beacon beam with a bright core.
+// 75 — LIGHTHOUSE: a bright narrow beam sweeping steadily around from the lamp.
+//      (Rewritten wholesale — was the amber warning beacon.)
 void anim_warningLight(uint32_t at){
-  clearFrame(); float tf=at*0.001f; float a=tf*3.0f;
-  fxSplat(0,0,3.5f,1.4f,CRGB(255,140,0));
-  for(int k=1;k<=16;k++){ float rr=k*4.0f; float spread=0.05f*k; float br=(1.0f-k/17.0f);
-    for(int j=-1;j<=1;j++){ float aa=a+j*spread; float b2=br*(j==0?1.0f:0.6f);
-      fxSplat(cosf(aa)*rr,sinf(aa)*rr,0.8f,1.2f,hotColor(b2,20,0)); } }
+  clearFrame(); float tf=at*0.001f; float beam=tf*1.6f;      // beam heading, steady rotation
+  fxSplat(0,0,3.0f,1.6f,CRGB(255,250,230));                  // lamp housing
+  for(int pass=0;pass<2;pass++) for(int s=0;s<12;s++){ float base=pass?Y_POS[s]:X_POS[s];
+    for(int n=1;n<=121;n++){ float other=(float)n-CENTER; float x=pass?other:base,y=pass?base:other;
+      float r=sqrtf(x*x+y*y); if(r<2.0f||r>72.0f) continue;
+      float th=atan2f(y,x); float d=th-beam;
+      while(d>3.1416f)d-=6.2832f; while(d<-3.1416f)d+=6.2832f;
+      const float half=0.22f;                                // narrow beam wedge (radians)
+      float wedge=1.0f-fabsf(d)/half; if(wedge<=0.0f) continue; wedge*=wedge;
+      float reach=constrain(1.0f-r/72.0f,0.0f,1.0f);
+      float v=wedge*(0.35f+0.65f*reach);                     // illuminate what the beam passes
+      if(v>0.02f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(38,110,255)),v);
+    } }
   showGrid();
 }
-// 76 — ALIENS: glowing alien heads with blinking eyes, gently bobbing.
+// 76 — ALIENS: cheeky hopping alien heads that wobble, blink, dart their eyes and zap.
 void anim_aliens(uint32_t at){
   clearFrame(); float tf=at*0.001f;
-  for(int i=0;i<3;i++){ float cx=-34+i*34.0f; float cy=sinf(tf*1.2f+i)*10.0f;
-    fxSplat(cx,cy,9.0f,3.0f,CRGB(CHSV(95,220,70))); fxSplat(cx,cy+3,7.0f,2.0f,CRGB(CHSV(95,220,50)));
-    float blink=fabsf(sinf(tf*0.8f+i*1.7f))>0.1f?1.0f:0.15f;
-    fxSplat(cx-3.0f,cy-1.0f,1.4f,1.0f,CRGB(CHSV(140,180,(uint8_t)(230*blink))));
-    fxSplat(cx+3.0f,cy-1.0f,1.4f,1.0f,CRGB(CHSV(140,180,(uint8_t)(230*blink)))); }
+  for(int i=0;i<3;i++){
+    float hop   = fabsf(sinf(tf*2.2f+i*2.1f));            // springy bounce
+    float cx    = -34+i*34.0f + sinf(tf*0.9f+i)*4.0f;     // wander side to side
+    float cy    = -6.0f + hop*14.0f;                      // hop up
+    float squash= 1.0f+0.22f*sinf(tf*4.4f+i);             // wobble/squash
+    uint8_t hue = 90+i*22;
+    fxSplat(cx,cy,9.0f*squash,3.0f,CRGB(CHSV(hue,220,80)));
+    fxSplat(cx,cy+3,7.0f,2.0f,CRGB(CHSV(hue,220,55)));
+    // wiggly antennae with glowing tips
+    fxSplat(cx-3.0f+sinf(tf*5.0f+i)*1.2f,cy+9.5f,0.8f,1.0f,CRGB(CHSV(40,255,210)));
+    fxSplat(cx+3.0f-sinf(tf*5.0f+i)*1.2f,cy+9.5f,0.8f,1.0f,CRGB(CHSV(40,255,210)));
+    // blinking eyes that dart left/right
+    float blink=fabsf(sinf(tf*1.3f+i*1.7f))>0.12f?1.0f:0.1f;
+    float look =sinf(tf*1.7f+i)*1.3f;
+    fxSplat(cx-3.0f+look,cy-1.0f,1.6f,1.0f,CRGB(CHSV(0,200,(uint8_t)(240*blink))));
+    fxSplat(cx+3.0f+look,cy-1.0f,1.6f,1.0f,CRGB(CHSV(0,200,(uint8_t)(240*blink))));
+    // cheeky grin
+    fxSplat(cx,cy-4.0f,1.0f,1.2f,CRGB(CHSV(0,150,(uint8_t)(150*blink))));
+    // occasional zap bolt from an alien
+    int znt=(int)(tf*0.6f)+i*7;
+    if(fxhash(znt*1.7f)>0.66f){ float zp=fxfract(tf*2.5f+i);
+      float zx=cx+(fxhash(znt*3.3f)-0.5f)*44.0f;
+      fxStreak(cx,cy,zx,cy+2.0f+zp*6.0f,0.4f,1.0f,CRGB(CHSV(150,120,(uint8_t)(255*(1.0f-zp*0.6f))))); }
+  }
   showGrid();
 }
 // 77 — SPACE INVADERS: smooth glow-cluster invaders marching (not blocky).
@@ -191,13 +229,6 @@ void fxInvader(float cx,float cy,uint8_t hue,int frame){
   CRGB c=CRGB(CHSV(hue,210,255));
   fxSplat(cx,cy,2.0f,1.1f,c); fxSplat(cx-3,cy,1.3f,1.0f,c); fxSplat(cx+3,cy,1.3f,1.0f,c);
   float ay=frame?-2.5f:2.5f; fxSplat(cx-4,cy+ay,1.1f,1.0f,c); fxSplat(cx+4,cy+ay,1.1f,1.0f,c);
-}
-void anim_spaceInvaders(uint32_t at){
-  clearFrame(); float tf=at*0.001f; int frame=((int)(tf*2.0f))&1;
-  float march=sinf(tf*0.8f)*10.0f; float drop=fmodf(tf*3.0f,60.0f)-30.0f;
-  for(int r=0;r<3;r++)for(int c=0;c<4;c++){ uint8_t hue=r==0?150:r==1?95:30;
-    fxInvader(-30+c*20.0f+march,-34+r*13.0f+drop,hue,frame); }
-  showGrid();
 }
 // 78 — RAIN: smooth falling droplets with short soft trails.
 void anim_rain2(uint32_t at){
@@ -224,12 +255,12 @@ void anim_confetti(uint32_t at){
     float br=sinf(ph*3.14159f); if(br>0.02f) fxSplat(x,y,0.7f,1.0f,CRGB(CHSV((uint8_t)(fxhash(i*5.5f)*255),230,(uint8_t)(br*255)))); }
   showGrid();
 }
-// 81 — SPIRAL EJECT: a spinning spiral flinging glowing particles outward.
+// 81 — SPIRAL EJECT: a wide spinning spiral flinging glowing particles outward.
 void anim_spiralEject(uint32_t at){
   clearFrame(); float tf=at*0.001f; fxSplat(0,0,2.4f,1.2f,CRGB(255,255,255));
-  for(int i=0;i<60;i++){ float ph=fxfract(tf*0.5f+fxhash(i*3.7f)); float r=ph*60.0f;
-    float ang=fxhash(i*3.7f)*6.2832f+tf*2.0f+ph*3.0f; float br=1.0f-ph;
-    fxSplat(cosf(ang)*r,sinf(ang)*r,0.5f+ph*1.0f,1.0f,hotColor(br,(uint8_t)(180+ph*80),0)); }
+  for(int i=0;i<70;i++){ float ph=fxfract(tf*0.5f+fxhash(i*3.7f)); float r=ph*76.0f;   // wider reach
+    float ang=fxhash(i*3.7f)*6.2832f+tf*2.0f+ph*2.2f; float br=1.0f-ph;                // arms spread more
+    fxSplat(cosf(ang)*r,sinf(ang)*r,0.6f+ph*1.4f,1.0f,hotColor(br,(uint8_t)(180+ph*80),0)); }
   showGrid();
 }
 // 82 — 3D-NOISE CLOUDS: drifting layered value-noise.
@@ -244,14 +275,22 @@ void anim_clouds3d(uint32_t at){
     } }
   showGrid();
 }
-// 83 — PULSING HEART: a smooth heart shape beating.
+// 83 — PULSING HEART: a clear heart silhouette (two top lobes, pointed bottom) beating.
 void anim_pulseHeart(uint32_t at){
-  clearFrame(); float tf=at*0.001f; float beat=0.5f+0.5f*fabsf(sinf(tf*2.2f)); float sc=1.0f/(20.0f+beat*6.0f);
+  clearFrame(); float tf=at*0.001f;
+  // lub-dub double beat that briefly swells the heart
+  float b=fmodf(tf*1.4f,1.0f);
+  float beat=constrain(expf(-b*9.0f)+0.7f*expf(-fabsf(b-0.20f)*9.0f),0.0f,1.0f);
+  float sc=1.0f/(22.0f - beat*3.0f);                        // grow on the beat
   for(int pass=0;pass<2;pass++) for(int s=0;s<12;s++){ float base=pass?Y_POS[s]:X_POS[s];
-    for(int n=1;n<=121;n++){ float other=(float)n-CENTER; float x=(pass?other:base)*sc, y=-(pass?base:other)*sc;
-      float xx=x*x,yy=y*y; float h=(xx+yy-1.0f); float f3=h*h*h-xx*y*yy;
-      float v=f3<0?1.0f:constrain(1.0f-f3*6.0f,0.0f,1.0f);
-      if(v>0.03f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(0,240,(uint8_t)(v*(150+beat*105)))),1.0f);
+    for(int n=1;n<=121;n++){ float other=(float)n-CENTER;
+      // world +y is up; the classic heart curve puts the two lobes on top and the
+      // cusp at the bottom, so DON'T flip y. Nudge down so it sits centred.
+      float x=(pass?other:base)*sc, y=(pass?base:other)*sc + 0.2f;
+      float xx=x*x,yy=y*y; float h=(xx+yy-1.0f); float f3=h*h*h-xx*y*yy;   // <0 inside heart
+      float v=f3<0?1.0f:constrain(1.0f-f3*5.0f,0.0f,1.0f);                 // soft anti-aliased edge
+      if(v>0.03f){ uint8_t sat=(uint8_t)(240-40.0f*(1.0f-v));             // edge blushes lighter
+        fxAdd(pass?false:true,s+1,n,CRGB(CHSV(0,sat,(uint8_t)(v*(150+beat*105)))),1.0f); }
     } }
   showGrid();
 }
@@ -297,18 +336,6 @@ void anim_firework2(uint32_t at){
   }
   showGrid();
 }
-// 87 — HORIZONTAL STRIPES: crisp bands flowing upward across the whole grid.
-void anim_hStripesFlow(uint32_t at){
-  clearFrame(); float tf=at*0.001f;
-  const float period=18.0f, aa=1.2f, on=period*0.55f;      // stripe repeat, ~1-LED edge, 55% duty
-  for(int pass=0;pass<2;pass++) for(int s=0;s<12;s++){ float base=pass?Y_POS[s]:X_POS[s];
-    for(int n=1;n<=121;n++){ float other=(float)n-CENTER; float y=pass?base:other;
-      float p=y-tf*22.0f; float m=p-period*floorf(p/period);          // position within one period (0..period)
-      float f=constrain(m/aa,0.0f,1.0f)*constrain((on-m)/aa,0.0f,1.0f); // hard band, 1-LED ramp at both edges
-      if(f>0.03f) fxAdd(pass?false:true,s+1,n,hotTint(f,150+(uint8_t)(8.0f*sinf(y*0.05f)),24),f);
-    } }
-  showGrid();
-}
 // 88 — VU BARS: each vertical strip is a music level bar (green→red), jumping to a beat.
 void anim_vuColumns(uint32_t at){
   clearFrame(); float tf=at*0.001f; int beat=(int)floorf(tf*2.4f); float decay=1.0f-fxfract(tf*2.4f);
@@ -338,5 +365,118 @@ void anim_vuGrid(uint32_t at){
       float a=(rightX-x<5.0f)?1.0f:0.65f;
       fxAdd(false,yi+1,n,hotTint(a,(uint8_t)(160+64*(1.0f-frac)),6,150),a); }
   }
+  showGrid();
+}
+
+// ═══════════════════════════════════════════════════════
+// 91 — SUPER HEXAGON: the game, imitated. Hexagonal walls are born at the rim
+// and rush the centre, each missing one of its six sides (the gap). A little
+// dart orbits the central hexagon and AUTO-DODGES — it steers into the gap of
+// the nearest incoming wall. The whole field spins and, Super-Hexagon style,
+// periodically reverses; the six sectors alternate two shades and pulse. Fast
+// and dizzying. Time is `at`, so the Speed knob scales the whole game;
+// showGrid() applies the Colour knob + AGC.
+//
+// Walls use a HEXAGON metric (level set of d*cos(angle-to-nearest-side-normal))
+// rather than a plain radius, so the rings read as rotating hexagons, not
+// circles — the one detail that makes it "super hexagon" and not "tunnel".
+// ═══════════════════════════════════════════════════════
+#define SHX_WALLS 6
+struct ShxWall { float r; uint8_t gap; uint8_t hue; bool live; };
+static ShxWall shxW[SHX_WALLS];
+static bool    shxInit=false;
+static float   shxSpin, shxSpinVel, shxPlayer, shxLastAt, shxSpawnAcc, shxFlipAcc;
+
+void anim_superHexagon(uint32_t at){
+  float tf=at*0.001f;
+  if(!shxInit){
+    for(int i=0;i<SHX_WALLS;i++) shxW[i].live=false;
+    shxSpin=0; shxSpinVel=1.4f; shxPlayer=0; shxLastAt=tf; shxSpawnAcc=0; shxFlipAcc=0;
+    shxInit=true;
+  }
+  float dt=tf-shxLastAt; shxLastAt=tf; if(dt<0)dt=0; if(dt>0.10f)dt=0.10f;   // guard mode-entry / wrap jumps
+
+  // ── Global spin with occasional reversal (the signature Super Hexagon move) ──
+  shxFlipAcc-=dt;
+  if(shxFlipAcc<=0){ shxSpinVel=(frand()<0.5f?-1.0f:1.0f)*(1.0f+frand()*1.6f); shxFlipAcc=2.5f+frand()*3.0f; }
+  shxSpin+=shxSpinVel*dt;
+
+  // ── Spawn walls from the rim on a steady cadence, advance them inward ──
+  const float OUTER=66.0f, WALLSPD=42.0f, THICK=2.6f, PLR=11.0f, CORE=6.5f;
+  shxSpawnAcc-=dt;
+  if(shxSpawnAcc<=0){
+    for(int i=0;i<SHX_WALLS;i++) if(!shxW[i].live){
+      shxW[i].live=true; shxW[i].r=OUTER; shxW[i].gap=(uint8_t)random(6); shxW[i].hue=(uint8_t)(tf*22.0f);
+      break;
+    }
+    shxSpawnAcc=0.55f;   // seconds between walls
+  }
+  for(int i=0;i<SHX_WALLS;i++) if(shxW[i].live){ shxW[i].r-=WALLSPD*dt; if(shxW[i].r<3.0f) shxW[i].live=false; }
+
+  // ── Auto-player: aim at the gap of the nearest wall still outside the player ──
+  float targetSect=-1.0f, bestR=1e9f;
+  for(int i=0;i<SHX_WALLS;i++) if(shxW[i].live && shxW[i].r>PLR-1.0f && shxW[i].r<bestR){
+    bestR=shxW[i].r; targetSect=shxW[i].gap+0.5f;   // centre of the gap sector, in field space
+  }
+  if(targetSect>=0.0f){
+    float worldTarget=(targetSect/6.0f)*6.2832f + shxSpin;     // field angle → world angle
+    float da=worldTarget-shxPlayer; while(da>3.14159f)da-=6.2832f; while(da<-3.14159f)da+=6.2832f;
+    float step=7.0f*dt; if(da>step)da=step; if(da<-step)da=-step; shxPlayer+=da;
+  }
+
+  clearFrame();
+  // ── Field render: one pass per strip pixel, hexagon walls composited over the
+  //    alternating-sector background (max-blend keeps walls/core on top). ──
+  float pulse=0.55f+0.45f*sinf(tf*3.0f);
+  for(int pass=0;pass<2;pass++) for(int s=0;s<12;s++){ float bpos=pass?Y_POS[s]:X_POS[s];
+    for(int n=1;n<=121;n++){ float other=(float)n-CENTER; float x=pass?other:bpos, y=pass?bpos:other;
+      float d=sqrtf(x*x+y*y);
+      float ang=atan2f(y,x)-shxSpin;                         // into the spinning field frame
+      float sf=ang*0.15915f; sf-=floorf(sf);                 // /(2pi) → 0..1
+      float within=sf*6.0f; int sect=(int)within; if(sect>5)sect=5;
+      float haf=(within-(float)sect)-0.5f;                   // -0.5..0.5 across the sector
+      float hexval=d*cosf(haf*1.0472f);                      // pi/3: hexagon level set (not a circle)
+      // background — two shades, radial falloff, whole-field pulse
+      float radial=constrain(1.0f-d/72.0f,0.0f,1.0f);
+      float v=((sect&1)?0.09f:0.17f)*pulse*radial;
+      CRGB col=CRGB(CHSV((uint8_t)(tf*18.0f),190,255));
+      // central hexagon
+      float ce=1.0f-fabsf(hexval-CORE)/1.3f; if(ce>v){ v=ce; col=CRGB(CHSV((uint8_t)(tf*18.0f+20),150,255)); }
+      // walls (every side lit except the gap sector)
+      for(int i=0;i<SHX_WALLS;i++) if(shxW[i].live && sect!=shxW[i].gap){
+        float e=1.0f-fabsf(hexval-shxW[i].r)/THICK; if(e>v){ v=e; col=hotTint(e,shxW[i].hue,18); }
+      }
+      if(v>0.03f) fxAdd(pass?false:true,s+1,n,col,v);
+    } }
+  // ── The dart orbiting the core ──
+  fxSplat(cosf(shxPlayer)*PLR, sinf(shxPlayer)*PLR, 1.4f, 1.1f, CRGB(255,255,255));
+  showGrid();
+}
+
+// ═══════════════════════════════════════════════════════
+// 92 — SQUARE IMPLODE: the exact inverse of CONCENTRIC SQUARES (wall mode #27).
+// There the square ping-rings expand OUTWARD from the centre; here they are born
+// at the rim and collapse INWARD, brightening and whitening as they shrink, with
+// a white core flash on every collapse. Same drawGridSquare()/showGrid() path;
+// only the phase term's sign is flipped so the wavefront travels the other way.
+// ═══════════════════════════════════════════════════════
+void anim_squareImplode(uint32_t at){
+  float tf=at*0.001f; const float pulseRate=0.5f;
+  clearFrame();
+  for(int half=5;half>=1;half--){
+    int r1=6-half, r2=7+half, c1=6-half, c2=7+half;
+    // +half*0.15 (concentricSquares used -half*0.15): the bright band now moves
+    // from the outer rings toward the centre as time advances.
+    float phase=fmodf(tf*pulseRate+(float)half*0.15f,1.0f); if(phase<0.0f)phase+=1.0f;
+    float bri=powf(sinf(phase*M_PI),2.0f);
+    uint8_t b=(uint8_t)(bri*(150.0f+(5-half)*20.0f)); if(b<3)continue;    // inner rings peak brighter
+    uint8_t hue=(uint8_t)(tf*30.0f-half*20.0f);
+    uint8_t sat=(uint8_t)constrain(220-(5-half)*28,90,255);              // whiter toward the core
+    drawGridSquare(r1,c1,r2,c2,CRGB(CHSV(hue,sat,b)));
+  }
+  // Core flash timed to the collapse — a spike as a wavefront reaches the middle.
+  float cf=powf(sinf(fmodf(tf*pulseRate,1.0f)*M_PI),6.0f);
+  uint8_t cb=(uint8_t)(cf*255.0f);
+  if(cb>3) fillCell(5,5,CRGB(cb,cb,cb));
   showGrid();
 }

@@ -16,7 +16,7 @@ const char* const ANIM_NAMES[]={
   "STARFIELD2","WARP","ASTEROIDS","SHOOTING","BLACKHOLE2","PULSAR2","PWNEBULA","ORION",
   "HORSEHEAD","TWINSTARS","PLANETS","EARTH","PANEL","RADAR","SINEWAVE","ROCKET","WARNLIGHT",
   "ALIENS","INVADERS","RAIN2","LEVITATE","CONFETTI","SPIRALEJ","CLOUDS3D","HEART2",
-  "RAINUP","STARSFLY","FIREWORK2","HSTRIPES","VUBARS","VUGRID"
+  "RAINUP","STARSFLY","FIREWORK2","HSTRIPES","VUBARS","VUGRID","ARMS"
 };
 
 // ═══════════ 0. SETUP / CALIBRATION GRID ═══════════
@@ -47,14 +47,47 @@ void anim_scrollBanner(const char* s,uint32_t at,uint8_t baseHue){
   }
   showGrid();
 }
-void anim_textTOGA(uint32_t at){   anim_scrollBanner("TOGA",  at, 40); }
-void anim_textCASTLE(uint32_t at){ anim_scrollBanner("CASTLE",at,140); }
-void anim_text2026(uint32_t at){   anim_scrollBanner("2026",  at,210); }
+// TOGA banner + occasional LIGHTNING: a burst of 1..5 very short flashes (with
+// short variable gaps between them) lighting a RANDOM single letter of "TOGA"
+// electric blue-white, then a longer random pause before the next burst.
+void anim_textTOGA(uint32_t at){
+  clearFrame();
+  CRGB col=CRGB(CHSV((uint8_t)(40+at/60),255,220));
+  drawTextCells("TOGA",0,TEXT_TOP,col);        // base render ("TOGA" is 11 nodes → static, leftC 0)
+
+  static const char* TW="TOGA";
+  static uint32_t nextBurst=0, evt=0;          // evt = time of next flash/gap transition
+  static int flashesLeft=0;                    // flashes still to fire in this burst
+  static int litLetter=-1;                     // 0..3 = letter currently flashing, -1 = none
+  static bool inFlash=false;                   // true while a letter is lit
+  if(nextBurst==0) nextBurst=at+700;           // first strike shortly after start
+
+  if(inFlash || flashesLeft>0){
+    if(at>=evt){
+      if(inFlash){                             // a flash just ended
+        inFlash=false; litLetter=-1;
+        if(flashesLeft>0) evt=at+25+random(120);         // short variable gap inside the burst
+        else nextBurst=at+1500+random(4000);             // long random pause before next burst
+      } else {                                 // gap ended → fire the next flash
+        inFlash=true; litLetter=random(4);
+        evt=at+20+random(55); flashesLeft--;             // very short flash
+      }
+    }
+  } else if(at>=nextBurst){                     // start a fresh burst
+    flashesLeft=1+random(5);                    // 1..5 flashes
+    inFlash=true; litLetter=random(4);
+    evt=at+20+random(55); flashesLeft--;
+  }
+
+  if(inFlash && litLetter>=0)                   // over-draw the struck letter, near-white electric blue
+    drawGlyphW(FONTW[glyphIndex(TW[litLetter])],TEXT_TOP,litLetter*3,CRGB(205,230,255));
+  showGrid();
+}
 
 // ═══════════ 55. RUNNER (Strichmännchen jump'n'run, Mario-style) ═══════════
 bool stickInit=false;
 static float rnObsX[RUN_OBS]; static uint8_t rnObsType[RUN_OBS]; static bool rnObsOn[RUN_OBS];
-static float rnJumpH,rnJumpV; static bool rnJumping; static uint32_t rnSpawn;
+static float rnJumpU; static bool rnJumping; static uint32_t rnSpawn;   // rnJumpU = hop progress 0..1
 // Obstacle shapes sitting on the ground (g = top ground cell row = GND-1).
 void rnDrawObstacle(int t,int ox,int GND){
   int g=GND-1;
@@ -76,15 +109,18 @@ void rnDrawObstacle(int t,int ox,int GND){
 }
 void anim_stickman(uint32_t at,float dt){
   const int RX=2, GND=9;                       // runner column / ground node row
-  if(!stickInit){ for(int i=0;i<RUN_OBS;i++) rnObsOn[i]=false; rnJumpH=0;rnJumpV=0;rnJumping=false; rnSpawn=at; stickInit=true; }
+  if(!stickInit){ for(int i=0;i<RUN_OBS;i++) rnObsOn[i]=false; rnJumpU=1.0f;rnJumping=false; rnSpawn=at; stickInit=true; }
   // world scrolls: obstacles move left toward the runner
   for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ rnObsX[i]-=0.006f*dt; if(rnObsX[i]<-2.0f) rnObsOn[i]=false; }
   if(at-rnSpawn>1500){ rnSpawn=at;
     for(int i=0;i<RUN_OBS;i++) if(!rnObsOn[i]){ rnObsX[i]=12.0f; rnObsType[i]=random(4); rnObsOn[i]=true; break; } }
-  // auto-jump when an obstacle approaches (jump higher to clear trees)
-  if(!rnJumping) for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ float d=rnObsX[i]-RX; if(d>0.3f&&d<3.4f){ rnJumping=true; rnJumpV=0.020f; rnJumpH=0.01f; break; } }
-  if(rnJumping){ rnJumpH+=rnJumpV*dt; rnJumpV-=0.00005f*dt; if(rnJumpH<=0){ rnJumpH=0; rnJumpV=0; rnJumping=false; } }
-  int F=GND-(int)(rnJumpH+0.5f);                // feet node (rises when jumping)
+  // ── parabolic HOP that clears the obstacle: trigger so the apex lands as the
+  //    obstacle passes the runner, so the whole body arcs up and over it ──
+  const float JUMP_DUR=560.0f, JUMP_PEAK=4.7f;                     // ms / cells cleared
+  if(!rnJumping) for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ float d=rnObsX[i]-RX; if(d>1.2f&&d<1.8f){ rnJumping=true; rnJumpU=0.0f; break; } }
+  if(rnJumping){ rnJumpU+=dt/JUMP_DUR; if(rnJumpU>=1.0f){ rnJumpU=1.0f; rnJumping=false; } }
+  float jh=JUMP_PEAK*4.0f*rnJumpU*(1.0f-rnJumpU);                  // 0 at ends, JUMP_PEAK at apex
+  int F=GND-(int)(jh+0.5f);                     // feet node (whole figure rises with the hop)
   bool f=((at/140)&1);                          // running leg frame
   CRGB col =CRGB(CHSV(35,180,235));             // runner
   CRGB gcol=CRGB(CHSV(95,200,110));             // ground
@@ -94,8 +130,7 @@ void anim_stickman(uint32_t at,float dt){
   // ── runner ──
   int C=RX;
   fillCell(F-5,C-1,col); fillCell(F-5,C,col);   // head (2-cell box)
-  drawVSeg(F-4,C,col); drawVSeg(F-3,C,col);      // torso
-  if(f) drawHSeg(F-4,C,col); else drawHSeg(F-4,C-1,col);            // pumping arm
+  drawVSeg(F-4,C,col); drawVSeg(F-3,C,col);      // torso (no arms)
   if(rnJumping){ drawVSeg(F-2,C-1,col); drawVSeg(F-2,C+1,col); }    // legs spread (airborne)
   else if(f){ drawVSeg(F-2,C-1,col); drawVSeg(F-1,C-1,col); drawVSeg(F-2,C+1,col); } // stride A
   else      { drawVSeg(F-2,C+1,col); drawVSeg(F-1,C+1,col); drawVSeg(F-2,C-1,col); } // stride B
@@ -145,28 +180,61 @@ void drawEye(int r,int c,int shape,CRGB col){
                     drawVSeg(r,c+1,col); drawVSeg(r+1,c+1,col); break;      // "+"
   }
 }
+// Smooth, anti-aliased friendly face: a warm-yellow ring, two eyes that glide
+// and blink, and a gently-breathing smile — all drawn in world coords with the
+// soft fx* helpers (no boxy cells). Restrained warm palette (yellow/amber/coral).
+// (world +y is "down" on the panel, matching the segment-node orientation.)
 void anim_smiley(uint32_t at){
-  int expr=(int)((at/1600)%4);                  // 4 upbeat expressions, ~1.6s each
-  CRGB face=CRGB(CHSV(45,235,205));
-  CRGB eye =CRGB(CHSV(150,220,235));
-  CRGB mth =CRGB(CHSV(0,230,235));
+  static bool smI=false;
+  static float gx=0,gy=0,tx=0,ty=0;              // gaze offset: current / target
+  static uint32_t moveT=0,blinkT=0,lastT=0;
+  static bool blinking=false;
+  if(!smI){ smI=true; moveT=blinkT=lastT=at; }
+  float dt=(float)(at-lastT); lastT=at; if(dt>60.0f) dt=60.0f;   // clamp scheduling gaps
+
+  // ── gaze: pick a new target now and then, glide smoothly toward it ──
+  if(at-moveT>1700){ moveT=at; tx=(frand()*2.0f-1.0f)*7.0f; ty=(frand()*2.0f-1.0f)*4.5f; }
+  float k=dt*0.0045f; if(k>1.0f) k=1.0f;
+  gx+=(tx-gx)*k; gy+=(ty-gy)*k;
+
+  // ── occasional blink (smooth close→open over ~300ms) ──
+  if(!blinking && at-blinkT>3200){ blinking=true; blinkT=at; }
+  float blink=0.0f;                              // 0 = open, 1 = shut
+  if(blinking){ uint32_t e=at-blinkT; if(e>=300) blinking=false;
+                else blink=1.0f-fabsf((float)e-150.0f)/150.0f; }
+  float eyeOpen=1.0f-blink;
+
   clearFrame();
-  smArc(5.5f,5.5f,4.3f,face,0);                 // smooth round face
-  // eyes: 2x2 blocks at (2,2) and (2,6), symmetric on the round face
-  int le,re;
-  switch(expr){
-    case 0:  le=re=EYE_SOLID; break;                  // happy   → wide eyes
-    case 1:  le=EYE_SOLID; re=EYE_HLINE; break;       // wink    → one eye a line
-    case 2:  le=re=EYE_VLINE; break;                  // surprised → alert vertical eyes
-    default: le=re=EYE_CROSS; break;                  // playful → cross eyes
+  CRGB faceCol = CRGB(CHSV(40,235,200));         // warm friendly yellow
+  CRGB eyeCol  = CRGB(255,238,205);              // soft warm white (the moving pupil)
+  CRGB socket  = CRGB(CHSV(38,240,70));          // faint amber eye-socket glow
+  CRGB cheek   = CRGB(CHSV(20,235,55));          // subtle warm blush accent
+  CRGB mthCol  = CRGB(CHSV(20,225,195));          // soft coral smile
+
+  // face outline — smooth glowing ring
+  fxRing(0.0f,0.0f,42.0f,2.4f,3.2f,faceCol);
+
+  // subtle cheeks
+  fxSplat(-27.0f, 8.0f, 3.0f,4.0f,cheek);
+  fxSplat( 27.0f, 8.0f, 3.0f,4.0f,cheek);
+
+  // eyes: faint socket glow + a bright pupil that glides with the gaze; blink
+  // squashes the pupil and draws a warm lid line across it.
+  const float EX=16.0f, EY=-15.0f;
+  for(int s=-1;s<=1;s+=2){ float ex=s*EX;
+    fxSplat(ex, EY, 5.5f,3.0f,socket);                              // socket
+    CRGB p=eyeCol; p.nscale8_video((uint8_t)(eyeOpen*eyeOpen*255.0f));
+    fxSplat(ex+gx, EY+gy*0.7f, 3.1f,2.2f,p);                        // pupil (fades as it closes)
+    if(blink>0.05f){ CRGB lid=faceCol; lid.nscale8_video((uint8_t)(blink*255.0f));
+      fxStreak(ex-5.5f,EY, ex+5.5f,EY, 1.3f,2.0f,lid); }            // closing lid
   }
-  drawEye(2,2,le,eye); drawEye(2,6,re,eye);
-  // mouth: always upbeat — smile, small O, or a straight line (never sad/angry)
-  switch(expr){
-    case 0: case 1: smArc(3.7f,5.5f,3.7f,mth,1); break;                    // smile (lower arc)
-    case 2: smArc(7.4f,5.5f,1.4f,mth,0); break;                           // surprised O
-    default: drawHSeg(8,4,mth); drawHSeg(8,5,mth); drawHSeg(8,6,mth); break; // neutral line
-  }
+
+  // mouth: a smooth smile whose depth breathes gently (never a flat/sad line)
+  float depth=11.0f+3.0f*sinf(at*0.0011f);       // gentle expression change
+  const float MW=22.0f, MY=7.0f;
+  int ms=20;
+  for(int i=0;i<=ms;i++){ float u=(float)i/ms*2.0f-1.0f;           // -1..1 across the smile
+    fxSplat(u*MW, MY+depth*(1.0f-u*u), 2.0f,2.2f,mthCol); }        // ∪ shape (middle lowest)
   showGrid();
 }
 
@@ -186,16 +254,33 @@ bool eyePixel(float x,float y,float gx,float gy,float bp,CRGB &out){
   float openTop=(2.0f*bp-1.0f)*B*sq, openBot=B*sq;               // upper lid sweeps down to close
   float vis=constrain((y-openTop)/SOFT,0.0f,1.0f)*constrain((openBot-y)/SOFT,0.0f,1.0f);
   float scl=constrain((0.94f-e)/0.12f,0.0f,1.0f)*vis;           // sclera fill (hidden by the lid)
+  // ── 3D sphere shading: bright domed centre, dim rim + fixed upper-left catch-light ──
+  float dome=0.40f+0.60f*sqrtf(constrain(1.0f-e,0.0f,1.0f));    // eyeball curvature falloff
+  float hx=x+12.0f, hy=y+12.0f;                                 // specular near the upper-left
+  float spec=constrain(1.0f-sqrtf(hx*hx+hy*hy)/12.0f,0.0f,1.0f); spec*=spec;
+  float shade=constrain(dome+spec*0.55f,0.0f,1.0f);
   float dg=sqrtf((x-gx)*(x-gx)+(y-gy)*(y-gy));
-  float irisF=constrain((RI-dg)/SOFT,0.0f,1.0f);
-  float pupF =constrain((RP-dg)/SOFT,0.0f,1.0f);
-  float wF=fmaxf(outF*0.5f, scl*(1.0f-irisF));                   // dim contour, or bright fill
-  float iF=irisF*(1.0f-pupF)*vis;                               // iris ring (dark pupil), hidden by lid
-  if(wF<0.02f && iF<0.02f) return false;
-  uint8_t wv=(uint8_t)(wF*160.0f);
-  CRGB c(wv,wv,(uint8_t)(wv*0.85f));                            // warm-white sclera / contour
-  CRGB ir=CRGB(CHSV(140,225,(uint8_t)(iF*235.0f)));            // teal iris
-  out=CRGB(qadd8(c.r,ir.r),qadd8(c.g,ir.g),qadd8(c.b,ir.b));
+  float irisF=constrain((RI-dg)/2.5f,0.0f,1.0f);               // crisper iris edge → more contrast
+  float pupF =constrain((RP-dg)/2.5f,0.0f,1.0f);
+  float wF=fmaxf(outF*0.5f, scl);
+  if(wF<0.02f && vis<0.02f) return false;
+  float sv=fmaxf(outF*0.5f, scl*shade);                        // shaded sclera / contour value
+  CRGB c((uint8_t)(sv*205.0f),(uint8_t)(sv*202.0f),(uint8_t)(sv*175.0f));   // warm-white, shaded
+  // Iris REPLACES the sclera (lerp, not additive) so its saturated colour keeps
+  // full contrast against the white instead of washing out; pupil darkens centre.
+  if(irisF>0.001f && vis>0.001f){
+    float ishade=0.45f+0.55f*constrain((RI-dg)/RI,0.0f,1.0f);   // subtle shading across the iris
+    CRGB iris=CRGB(0,170,120); iris.nscale8_video((uint8_t)(ishade*255.0f));  // rich emerald-teal
+    float mix=irisF*vis;
+    c.r=(uint8_t)(c.r*(1.0f-mix)+iris.r*mix);
+    c.g=(uint8_t)(c.g*(1.0f-mix)+iris.g*mix);
+    c.b=(uint8_t)(c.b*(1.0f-mix)+iris.b*mix);
+    float pm=pupF*vis;                                          // near-black pupil
+    c.r=(uint8_t)(c.r*(1.0f-pm)); c.g=(uint8_t)(c.g*(1.0f-pm)); c.b=(uint8_t)(c.b*(1.0f-pm));
+    float cl=constrain(1.0f-sqrtf((x-gx+4.0f)*(x-gx+4.0f)+(y-gy+4.0f)*(y-gy+4.0f))/3.0f,0.0f,1.0f)*vis;
+    c.r=qadd8(c.r,(uint8_t)(cl*220)); c.g=qadd8(c.g,(uint8_t)(cl*225)); c.b=qadd8(c.b,(uint8_t)(cl*210));  // wet catch-light
+  }
+  out=c;
   return true;
 }
 void anim_eye(uint32_t at,float dt){

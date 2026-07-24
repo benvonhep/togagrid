@@ -151,61 +151,6 @@ void anim_fourfoldSymmetry(uint32_t t) {
   showGrid();
 }
 
-// 39. DIAMOND PULSE
-// Concentric diamonds (45° squares) expand from center.
-// Distance measured as Manhattan distance = perfect diamond shape.
-void anim_diamondPulse(uint32_t t) {
-  float tf=t*0.001f;
-  for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;
-    // Manhattan distance from center = diamond metric
-    float manhattan=(fabsf(x)+fabsf(y))/MAX_DIST;
-    // Multiple expanding rings
-    float ring=fmod(manhattan-tf*0.4f,0.25f)/0.25f;
-    float bri=powf(sinf(ring*M_PI),3.0f);
-    // Rotation: slowly rotate the diamond
-    float rotAngle=tf*0.1f;float rx=x*cosf(rotAngle)-y*sinf(rotAngle);float ry=x*sinf(rotAngle)+y*cosf(rotAngle);
-    float rotManhattan=(fabsf(rx)+fabsf(ry))/MAX_DIST;
-    float ring2=fmod(rotManhattan-tf*0.3f+0.5f,0.25f)/0.25f;
-    float bri2=powf(sinf(ring2*M_PI),3.0f)*0.5f;
-    float total=constrain(bri+bri2,0.0f,1.0f);
-    uint8_t b=(uint8_t)(total*230.0f);
-    uint8_t hue=(uint8_t)(manhattan*200.0f+tf*25.0f);
-    setLED(true,xi+1,n,b>3?CRGB(CHSV(hue,230,b)):CRGB::Black);
-  }}
-  for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;
-    float manhattan=(fabsf(x)+fabsf(y))/MAX_DIST;float ring=fmod(manhattan-tf*0.4f,0.25f)/0.25f;float bri=powf(sinf(ring*M_PI),3.0f);
-    float rotAngle=tf*0.1f;float rx=x*cosf(rotAngle)-y*sinf(rotAngle);float ry=x*sinf(rotAngle)+y*cosf(rotAngle);
-    float ring2=fmod((fabsf(rx)+fabsf(ry))/MAX_DIST-tf*0.3f+0.5f,0.25f)/0.25f;
-    float total=constrain(bri+powf(sinf(ring2*M_PI),3.0f)*0.5f,0.0f,1.0f);
-    uint8_t b=(uint8_t)(total*230.0f);uint8_t hue=(uint8_t)(manhattan*200.0f+tf*25.0f);
-    setLED(false,yi+1,n,b>3?CRGB(CHSV(hue,230,b)):CRGB::Black);
-  }}
-  showGrid();
-}
-
-// 40. CHECKERBOARD MELT
-// 121 squares in checkerboard pattern. Colours slowly melt and shift
-// between squares. Neighbouring squares bleed into each other.
-void anim_checkerboardMelt(uint32_t t) {
-  float tf=t*0.001f;
-  FastLED.clear();
-  for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
-
-  for(int row=0;row<11;row++){for(int col=0;col<11;col++){
-    bool checker=((row+col)%2==0);
-    // Slowly shifting hue per square, neighbours offset
-    float hueBase=(float)(row*11+col)*2.0f;
-    float hueShift=sinf(tf*0.3f+hueBase*0.05f)*40.0f;
-    uint8_t hue=(uint8_t)(hueBase+hueShift+tf*15.0f);
-    float bri=0.6f+0.4f*sinf(tf*0.5f+hueBase*0.1f);
-    uint8_t b=(uint8_t)(bri*(checker?200.0f:80.0f));
-    // Draw filled square: all 4 borders
-    int r1=row+1;int c1=col+1;int r2=row+2;int c2=col+2;
-    drawGridSquare(r1,c1,r2,c2,CRGB(CHSV(hue,230,b)));
-  }}
-  showGrid();
-}
-
 // 41. GAME OF LIFE
 // Conway's Game of Life on the 11x11 grid of squares.
 // Each square = 1 cell. Evolves every 400ms. Full colour by age.
@@ -241,58 +186,6 @@ void anim_gameOfLife(uint32_t t) {
     uint8_t sat=(uint8_t)(min((int)age*4,255));
     uint8_t bri=200;
     drawGridSquare(row+1,col+1,row+2,col+2,CRGB(CHSV(hue,sat,bri)));
-  }
-  showGrid();
-}
-
-// 42. ROTATING CUBE
-// Isometric projection of a rotating cube. Cube faces drawn using
-// grid squares. 3 visible faces with different brightness/colour.
-void anim_rotatingCube(uint32_t t) {
-  float tf=t*0.001f;
-  float rotX=tf*0.4f; float rotY=tf*0.6f;
-
-  FastLED.clear();
-  for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
-
-  // Cube vertices in 3D (centered, size=4 strips)
-  float S=4.0f;
-  float verts[8][3]={{-S,-S,-S},{S,-S,-S},{S,S,-S},{-S,S,-S},{-S,-S,S},{S,-S,S},{S,S,S},{-S,S,S}};
-
-  // Rotate all vertices
-  float proj[8][2];
-  for(int v=0;v<8;v++){
-    float x=verts[v][0],y=verts[v][1],z=verts[v][2];
-    // Rotate around Y
-    float x2=x*cosf(rotY)-z*sinf(rotY); float z2=x*sinf(rotY)+z*cosf(rotY);
-    // Rotate around X
-    float y3=y*cosf(rotX)-z2*sinf(rotX); float z3=y*sinf(rotX)+z2*cosf(rotX);
-    // Isometric projection → grid coords (6=center)
-    float iso_x=x2*0.866f-y3*0.866f; float iso_y=x2*0.5f+y3*0.5f-z3;
-    proj[v][0]=iso_x+6.5f; proj[v][1]=iso_y+6.5f; // offset to grid center
-  }
-
-  // Draw 3 visible faces as square outlines
-  // Face indices: front(4,5,6,7), top(3,2,6,7), right(1,5,6,2)
-  int faces[3][4]={{4,5,6,7},{3,2,6,7},{1,5,6,2}};
-  uint8_t faceHue[3]={(uint8_t)(tf*20),(uint8_t)(tf*20+60),(uint8_t)(tf*20+120)};
-  uint8_t faceBri[3]={220,160,100};
-
-  for(int f=0;f<3;f++){
-    // Project each face vertex to nearest grid square corner
-    for(int e=0;e<4;e++){
-      int v1=faces[f][e]; int v2=faces[f][(e+1)%4];
-      int r1=constrain((int)proj[v1][1],1,12); int c1=constrain((int)proj[v1][0],1,12);
-      int r2=constrain((int)proj[v2][1],1,12); int c2=constrain((int)proj[v2][0],1,12);
-      if(r1==r2&&c1==c2)continue;
-      // Draw line between projected points on strips
-      int rMin=min(r1,r2);int rMax=max(r1,r2);int cMin=min(c1,c2);int cMax=max(c1,c2);
-      if(rMin==rMax){// horizontal edge → Y strip
-        for(int led=INTS[cMin-1];led<=INTS[cMax-1];led++)setLED(false,rMin,led,CRGB(CHSV(faceHue[f],220,faceBri[f])));
-      }else if(cMin==cMax){// vertical edge → X strip
-        for(int led=INTS[rMin-1];led<=INTS[rMax-1];led++)setLED(true,cMin,led,CRGB(CHSV(faceHue[f],220,faceBri[f])));
-      }
-    }
   }
   showGrid();
 }
@@ -416,45 +309,6 @@ void anim_deepBreath(uint32_t t) {
     float bri=0.05f+0.9f*localBreath;uint8_t b=(uint8_t)(bri*220.0f);
     uint8_t localHue=(uint8_t)(hue+dist*20.0f);uint8_t sat=(uint8_t)(180.0f+localBreath*75.0f);
     setLED(false,yi+1,n,CRGB(CHSV(localHue,sat,b)));
-  }}
-  showGrid();
-}
-
-// 47. SUNSET HORIZON
-// Colour gradient flows from top to bottom. Slowly rotates through
-// all sunset colours — deep blue → indigo → purple → red → orange → gold.
-// The horizon line drifts slowly.
-void anim_sunsetHorizon(uint32_t t) {
-  float tf=t*0.001f;
-  // Horizon position drifts slowly
-  float horizon=sinf(tf*0.07f)*0.3f; // -0.3..+0.3 normalised
-  for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;
-    float nY=y/MAX_DIST; // -1..1
-    // Position relative to horizon
-    float pos=nY-horizon; // -1.3..1.3
-    float posN=(pos+1.3f)/2.6f; // 0..1
-    // Colour gradient: sky (top, posN=0) → horizon (posN=0.5) → ground (posN=1)
-    // Sky: deep blue-purple
-    // Horizon: orange-red glow
-    // Add a soft atmospheric glow at the horizon line
-    float horizonGlow=expf(-fabsf(pos)*6.0f)*0.6f;
-    // Main gradient hue: 180(blue) at top → 0(red) at horizon → 25(orange) below
-    uint8_t hue;
-    if(posN<0.5f) hue=(uint8_t)(200.0f-posN*2.0f*200.0f+(tf*5.0f));
-    else          hue=(uint8_t)(0.0f+(posN-0.5f)*2.0f*25.0f+(tf*5.0f));
-    float bri=0.3f+0.6f*(1.0f-fabsf(posN-0.5f)*1.5f)+horizonGlow;
-    bri=constrain(bri,0.0f,1.0f);
-    uint8_t b=(uint8_t)(bri*220.0f);
-    uint8_t sat=(uint8_t)(180.0f+horizonGlow*75.0f);
-    setLED(true,xi+1,n,CRGB(CHSV(hue,sat,b)));
-  }}
-  for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;
-    float nY=y/MAX_DIST;float pos=nY-horizon;float posN=(pos+1.3f)/2.6f;
-    float horizonGlow=expf(-fabsf(pos)*6.0f)*0.6f;
-    uint8_t hue=posN<0.5f?(uint8_t)(200.0f-posN*2.0f*200.0f+(tf*5.0f)):(uint8_t)((posN-0.5f)*2.0f*25.0f+(tf*5.0f));
-    float bri=constrain(0.3f+0.6f*(1.0f-fabsf(posN-0.5f)*1.5f)+horizonGlow,0.0f,1.0f);
-    uint8_t b=(uint8_t)(bri*220.0f);uint8_t sat=(uint8_t)(180.0f+horizonGlow*75.0f);
-    setLED(false,yi+1,n,CRGB(CHSV(hue,sat,b)));
   }}
   showGrid();
 }
@@ -660,7 +514,9 @@ void anim_cosmicDust(uint32_t t) {
 void anim_heartglow(uint32_t t) {
   float tf=t*0.001f;
   // Heartbeat timing: beat every ~4s, very slow expansion
-  float cycle=fmod(tf*0.25f,1.0f); // one cycle per 4s
+  float cyclePos=tf*0.25f;               // integer part = beat index
+  uint32_t beat=(uint32_t)cyclePos;      // which heartbeat we're in
+  float cycle=cyclePos-(float)beat;      // 0..1 within this beat
   // Shape: fast rise (0→0.15), slow glow (0.15→0.6), long pause (0.6→1.0)
   float pulse;
   if(cycle<0.15f)      pulse=cycle/0.15f;                          // rise
@@ -668,16 +524,42 @@ void anim_heartglow(uint32_t t) {
   else                 pulse=0.3f*(1.0f-(cycle-0.6f)/0.4f);        // tail to silence
   pulse=pulse*pulse*(3.0f-2.0f*pulse); // smoothstep
 
-  // Pulse radius expands outward
+  // ── Wandering origin ──────────────────────────────────────────
+  // Each heartbeat is born from a NEW spot on the panel (not the centre),
+  // and between beats that spot drifts smoothly, so the glow keeps moving.
+  // Per-beat target position from a cheap hash of the beat index, then
+  // eased toward over the beat so successive glows come from varied places.
+  static uint32_t hgLastBeat=0xFFFFFFFF;
+  static float hgOX=0.0f, hgOY=0.0f;      // current origin (world coords)
+  static float hgPX=0.0f, hgPY=0.0f;      // previous beat's origin
+  static float hgTX=0.0f, hgTY=0.0f;      // this beat's target origin
+  if(beat!=hgLastBeat){
+    hgPX=hgOX; hgPY=hgOY;                 // start from where we were
+    // Deterministic pseudo-random target within the panel (~±40 of ±51).
+    uint32_t h=beat*2654435761u + 1013904223u;
+    float ax=((h & 0xFFFF)/65535.0f);            // 0..1
+    float ay=(((h>>16) & 0xFFFF)/65535.0f);      // 0..1
+    hgTX=(ax-0.5f)*80.0f;                 // -40..+40
+    hgTY=(ay-0.5f)*80.0f;
+    hgLastBeat=beat;
+  }
+  // Ease from previous origin to this beat's target across the beat, plus a
+  // gentle continuous wander so it never sits perfectly still.
+  float ease=cycle*cycle*(3.0f-2.0f*cycle);          // smoothstep 0..1
+  float ox=hgPX+(hgTX-hgPX)*ease + sinf(tf*0.11f)*4.0f;
+  float oy=hgPY+(hgTY-hgPY)*ease + cosf(tf*0.09f)*4.0f;
+  hgOX=ox; hgOY=oy;                       // remember for next beat's handoff
+
+  // Pulse radius expands outward from the (moving) origin
   float radius=cycle*MAX_DIST*1.3f;
 
   for(int xi=0;xi<12;xi++){float x=X_POS[xi];for(int n=1;n<=121;n++){float y=(float)n-CENTER;
-    float dist=sqrtf(x*x+y*y);
-    // Warm ambient glow always present (very dim)
+    float ddx=x-ox, ddy=y-oy; float dist=sqrtf(ddx*ddx+ddy*ddy);
+    // Warm ambient glow always present (very dim), centred on the origin
     float ambient=expf(-dist*0.03f)*0.08f;
     // Expanding pulse ring
     float ring=max(0.0f,1.0f-fabsf(dist-radius)/12.0f)*pulse;
-    // Core glow at center during peak
+    // Core glow at the origin during peak
     float core=expf(-dist*0.07f)*pulse*0.8f;
     float total=constrain(ambient+ring+core,0.0f,1.0f);
     uint8_t b=(uint8_t)(total*235.0f);
@@ -687,7 +569,7 @@ void anim_heartglow(uint32_t t) {
     setLED(true,xi+1,n,b>1?CRGB(CHSV(hue,sat,b)):CRGB::Black);
   }}
   for(int yi=0;yi<12;yi++){float y=Y_POS[yi];for(int n=1;n<=121;n++){float x=(float)n-CENTER;
-    float dist=sqrtf(x*x+y*y);
+    float ddx=x-ox, ddy=y-oy; float dist=sqrtf(ddx*ddx+ddy*ddy);
     float ambient=expf(-dist*0.03f)*0.08f;float ring=max(0.0f,1.0f-fabsf(dist-radius)/12.0f)*pulse;float core=expf(-dist*0.07f)*pulse*0.8f;
     float total=constrain(ambient+ring+core,0.0f,1.0f);uint8_t b=(uint8_t)(total*235.0f);
     uint8_t hue=(uint8_t)(5.0f+pulse*15.0f);uint8_t sat=(uint8_t)(255.0f-total*180.0f);

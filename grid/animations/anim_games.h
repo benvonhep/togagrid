@@ -95,51 +95,6 @@ void tetNew(){
   if(!tetFitsCells(cells,tetR,tetC)) for(int a=0;a<11;a++) for(int b=0;b<11;b++) tetB[a][b]=0; // full → restart
   tetPlan();
 }
-void anim_tetris(uint32_t at,float dt){
-  if(!tetInit){ for(int a=0;a<11;a++) for(int b=0;b<11;b++) tetB[a][b]=0; tetStep=at; tetInit=true; tetClearing=false; tetNew(); }
-  if(tetClearing){                                     // full rows flash twice, then clear
-    if(at-tetFlashT>=170){
-      tetFlashT=at;
-      if(tetFlashCnt>0) tetFlashCnt--;
-      if(tetFlashCnt==0){
-        for(int r=10;r>=0;r--){ bool full=true; for(int c=0;c<11;c++) if(!tetB[r][c]) full=false;
-          if(full){ for(int rr=r;rr>0;rr--) for(int c=0;c<11;c++) tetB[rr][c]=tetB[rr-1][c];
-                    for(int c=0;c<11;c++) tetB[0][c]=0; r++; } }
-        tetClearing=false; tetNew();
-      }
-    }
-  } else if(at-tetStep>=300){                           // slow, deliberate play
-    tetStep=at;
-    int8_t cur[4][2]; tetCells(tetShape,tetRot,cur);
-    if(tetRot!=tetTargetRot){                           // 1) turn the piece
-      int nr=(tetRot+1)&3; int8_t rc[4][2]; tetCells(tetShape,nr,rc);
-      if(tetFitsCells(rc,tetR,tetC)) tetRot=nr;
-      else if(tetFitsCells(rc,tetR,tetC-1)){ tetRot=nr; tetC--; }
-      else if(tetFitsCells(rc,tetR,tetC+1)){ tetRot=nr; tetC++; }
-      else tetTargetRot=tetRot;
-    } else if(tetC!=tetTargetCol){                       // 2) slide toward target column
-      int dir=tetTargetCol>tetC?1:-1; int8_t rc[4][2]; tetCells(tetShape,tetRot,rc);
-      if(tetFitsCells(rc,tetR,tetC+dir)) tetC+=dir; else tetTargetCol=tetC;
-    } else if(tetFitsCells(cur,tetR+1,tetC)){            // 3) fall
-      tetR++;
-    } else {                                            // lock; if rows completed, start the flash
-      for(int i=0;i<4;i++){ int rr=tetR+cur[i][0],cc=tetC+cur[i][1]; if(rr>=0&&rr<=10&&cc>=0&&cc<=10) tetB[rr][cc]=tetHue; }
-      bool any=false;
-      for(int r=0;r<11;r++){ bool full=true; for(int c=0;c<11;c++) if(!tetB[r][c]) full=false; tetFull[r]=full; if(full) any=true; }
-      if(any){ tetClearing=true; tetFlashCnt=4; tetFlashT=at; }   // 4 toggles → two white flashes
-      else tetNew();
-    }
-  }
-  clearFrame();
-  for(int r=0;r<11;r++) for(int c=0;c<11;c++) if(tetB[r][c]) fillCell(r,c,CRGB(CHSV(tetB[r][c],220,160)));
-  if(tetClearing){
-    if(tetFlashCnt&1) for(int r=0;r<11;r++) if(tetFull[r]) for(int c=0;c<11;c++) fillCell(r,c,CRGB(255,255,255));
-  } else {
-    int8_t cur[4][2]; tetCells(tetShape,tetRot,cur);
-    for(int i=0;i<4;i++){ int rr=tetR+cur[i][0], cc=tetC+cur[i][1]; if(rr>=0) fillCell(rr,cc,CRGB(CHSV(tetHue,255,235))); }
-  }
-  showGrid();
-}
 
 // ═══════════ 40. SNAKE (self-playing) ═══════════
 bool snakeInit=false;
@@ -212,16 +167,19 @@ void anim_iconShow(uint32_t at){
 // ═══════════ 42. BOUNCING LOGO ═══════════
 bool logoInit=false;
 static float logoX,logoY,logoVX,logoVY;
-static uint8_t logoHue;
+static float logoHueF;                         // slow continuous hue accumulator
 const uint8_t LOGO[5]={0b01010,0b11111,0b11111,0b01110,0b00100}; // 5x5 heart
 void anim_bouncingLogo(uint32_t at,float dt){
-  if(!logoInit){ logoX=3;logoY=2;logoVX=0.017f;logoVY=0.012f;logoHue=random(256);logoInit=true; }
+  if(!logoInit){ logoX=3;logoY=2;logoVX=0.017f;logoVY=0.012f;logoHueF=random(256);logoInit=true; }
   logoX+=logoVX*dt; logoY+=logoVY*dt;
   const int w=5;
-  if(logoX<0){ logoX=0; logoVX=-logoVX; logoHue+=43; }
-  if(logoX>11-w){ logoX=11-w; logoVX=-logoVX; logoHue+=43; }
-  if(logoY<0){ logoY=0; logoVY=-logoVY; logoHue+=43; }
-  if(logoY>11-w){ logoY=11-w; logoVY=-logoVY; logoHue+=43; }
+  // just bounce — no abrupt colour jumps on the walls anymore
+  if(logoX<0){ logoX=0; logoVX=-logoVX; }
+  if(logoX>11-w){ logoX=11-w; logoVX=-logoVX; }
+  if(logoY<0){ logoY=0; logoVY=-logoVY; }
+  if(logoY>11-w){ logoY=11-w; logoVY=-logoVY; }
+  logoHueF+=dt*0.010f;                          // slow, smooth hue drift (~25s/cycle)
+  uint8_t logoHue=(uint8_t)logoHueF;
   clearFrame();
   int ox=(int)(logoX+0.5f), oy=(int)(logoY+0.5f);
   for(int r=0;r<5;r++) for(int c=0;c<5;c++)
@@ -257,31 +215,47 @@ static uint8_t rpHue[RRIP_N];
 static uint32_t rripSpawn;
 void anim_rippleRain(uint32_t at,float dt){
   if(!rripInit){ for(int i=0;i<RRIP_N;i++) rpAct[i]=false; rripSpawn=at; rripInit=true; }
-  if(at-rripSpawn>=340){
+  if(at-rripSpawn>=900){                         // gentler spawn rate → far fewer ripples at once
     rripSpawn=at;
     for(int i=0;i<RRIP_N;i++) if(!rpAct[i]){ rpAct[i]=true; rpR[i]=1+random(9); rpC[i]=1+random(9); rpRad[i]=0; rpHue[i]=random(256); break; }
   }
   clearFrame();
+  const float thick=1.5f;                        // soft ring half-width (smooth, not chunky)
   for(int i=0;i<RRIP_N;i++){
     if(!rpAct[i]) continue;
-    rpRad[i]+=dt*0.006f;
-    if(rpRad[i]>8.0f){ rpAct[i]=false; continue; }
-    int R=(int)(rpRad[i]+0.5f);
-    uint8_t val=(uint8_t)constrain(220.0f*(1.0f-rpRad[i]/8.0f),0.0f,220.0f);
-    for(int r=0;r<11;r++) for(int c=0;c<11;c++)
-      if(max(iabs(r-rpR[i]),iabs(c-rpC[i]))==R) fillCell(r,c,hotColor(val/255.0f,rpHue[i],0));
+    rpRad[i]+=dt*0.0026f;                         // slow, fluid expansion (integrated with dt)
+    if(rpRad[i]>9.0f){ rpAct[i]=false; continue; }
+    float fade=1.0f-rpRad[i]/9.0f; fade*=fade;    // soft ease-out fade with age
+    for(int r=0;r<11;r++) for(int c=0;c<11;c++){
+      float dr=r-rpR[i], dc=c-rpC[i];
+      float d=sqrtf(dr*dr+dc*dc);                 // round, continuous ring
+      float prof=1.0f-fabsf(d-rpRad[i])/thick;    // anti-aliased ring profile
+      if(prof<=0.0f) continue;
+      float v=prof*prof*fade*0.85f;               // gentle, soft falloff
+      fillCell(r,c,hotColor(v,rpHue[i],0));
+    }
   }
   showGrid();
 }
 
 // ═══════════ 45. SPIRAL GALAXY ═══════════
 void anim_spiralGalaxy(uint32_t t){
+  static bool     galInit=false;
+  static float    galAng=0.0f;                   // integrated spin angle (seamless)
+  static uint32_t galLastT=0;
+  if(!galInit){ galLastT=t; galInit=true; }
+  float dtm=(float)(t-galLastT); galLastT=t;
+  if(dtm>200.0f) dtm=200.0f;                      // guard against long stalls
+  // Slowly-varying angular velocity: a slow sine that eases smoothly through zero,
+  // so the spiral speeds up, slows, and gently reverses direction now and then.
+  float omega=0.0016f*sinf(t*0.00005f);           // ~63s from one turn direction to the other
+  galAng+=omega*dtm;                              // accumulate → a sign change is seamless
   float tf=t*0.001f;
   for(int xi=0;xi<12;xi++){
     float x=X_POS[xi];
     for(int n=1;n<=121;n++){
       float y=(float)n-CENTER, r=sqrtf(x*x+y*y)/MAX_DIST, ang=atan2f(y,x);
-      float arm=sinf(ang*2.0f - r*7.5f + tf*1.6f)*0.5f+0.5f;
+      float arm=sinf(ang*2.0f - r*7.5f + galAng)*0.5f+0.5f;
       float v=arm*(1.0f-r*0.55f); if(r<0.14f) v+=(0.14f-r)*5.0f; // core glow
       v=constrain(v,0.0f,1.0f); v*=v;
       uint8_t b=(uint8_t)(v*230.0f);
@@ -293,66 +267,12 @@ void anim_spiralGalaxy(uint32_t t){
     float yy=Y_POS[yi];
     for(int n=1;n<=121;n++){
       float x=(float)n-CENTER, r=sqrtf(x*x+yy*yy)/MAX_DIST, ang=atan2f(yy,x);
-      float arm=sinf(ang*2.0f - r*7.5f + tf*1.6f)*0.5f+0.5f;
+      float arm=sinf(ang*2.0f - r*7.5f + galAng)*0.5f+0.5f;
       float v=arm*(1.0f-r*0.55f); if(r<0.14f) v+=(0.14f-r)*5.0f;
       v=constrain(v,0.0f,1.0f); v*=v;
       uint8_t b=(uint8_t)(v*230.0f);
       uint8_t hue=(uint8_t)(165+r*70.0f+tf*9.0f);
       setLED(false,yi+1,n, b>3?CRGB(CHSV(hue,r<0.14f?90:210,b)):CRGB::Black);
-    }
-  }
-  showGrid();
-}
-
-// ═══════════ 46. PLASMA FIELD ═══════════
-void anim_plasmaField(uint32_t t){
-  float tf=t*0.001f;
-  for(int xi=0;xi<12;xi++){
-    float x=X_POS[xi];
-    for(int n=1;n<=121;n++){
-      float y=(float)n-CENTER;
-      float v=sinf(x*0.09f+tf)+sinf(y*0.09f+tf*1.1f)
-             +sinf((x+y)*0.07f+tf*0.8f)+sinf(sqrtf(x*x+y*y)*0.10f-tf*1.3f);
-      float nv=(v+4.0f)/8.0f;
-      uint8_t hue=(uint8_t)(nv*255.0f+tf*20.0f);
-      setLED(true,xi+1,n,CRGB(CHSV(hue,230,(uint8_t)(90+nv*165))));   // brightness peaks add depth
-    }
-  }
-  for(int yi=0;yi<12;yi++){
-    float yy=Y_POS[yi];
-    for(int n=1;n<=121;n++){
-      float x=(float)n-CENTER;
-      float v=sinf(x*0.09f+tf)+sinf(yy*0.09f+tf*1.1f)
-             +sinf((x+yy)*0.07f+tf*0.8f)+sinf(sqrtf(x*x+yy*yy)*0.10f-tf*1.3f);
-      float nv=(v+4.0f)/8.0f;
-      uint8_t hue=(uint8_t)(nv*255.0f+tf*20.0f);
-      setLED(false,yi+1,n,CRGB(CHSV(hue,230,(uint8_t)(90+nv*165))));   // brightness peaks add depth
-    }
-  }
-  showGrid();
-}
-
-// ═══════════ 47. BREATHE GRADIENT (calm) ═══════════
-void anim_breatheGradient(uint32_t t){
-  float tf=t*0.001f;
-  float breath=0.45f+0.55f*(0.5f+0.5f*sinf(tf*0.6f));
-  uint8_t base=(uint8_t)(tf*6.0f);
-  for(int xi=0;xi<12;xi++){
-    float x=X_POS[xi];
-    for(int n=1;n<=121;n++){
-      float y=(float)n-CENTER;
-      uint8_t hue=(uint8_t)(base+(x+y)*0.9f);
-      uint8_t b=(uint8_t)(breath*200.0f);
-      setLED(true,xi+1,n,CRGB(CHSV(hue,190,b)));
-    }
-  }
-  for(int yi=0;yi<12;yi++){
-    float yy=Y_POS[yi];
-    for(int n=1;n<=121;n++){
-      float x=(float)n-CENTER;
-      uint8_t hue=(uint8_t)(base+(x+yy)*0.9f);
-      uint8_t b=(uint8_t)(breath*200.0f);
-      setLED(false,yi+1,n,CRGB(CHSV(hue,190,b)));
     }
   }
   showGrid();
@@ -424,28 +344,3 @@ void anim_fireworks(uint32_t at,float dt){
 // ═══════════ 50. REACTION-DIFFUSION (Gray-Scott lite) ═══════════
 bool rdInit=false;
 static float rdA[11][11],rdB[11][11],rdNA[11][11],rdNB[11][11];
-void anim_reactionDiff(uint32_t at,float dt){
-  if(!rdInit){
-    for(int r=0;r<11;r++) for(int c=0;c<11;c++){ rdA[r][c]=1.0f; rdB[r][c]=0.0f; }
-    for(int r=4;r<=6;r++) for(int c=4;c<=6;c++){ rdA[r][c]=0.0f; rdB[r][c]=0.9f; }
-    rdInit=true;
-  }
-  const float Da=1.0f,Db=0.5f,f=0.055f,k=0.062f;
-  for(int iter=0;iter<2;iter++){
-    for(int r=0;r<11;r++) for(int c=0;c<11;c++){
-      int rm=(r+10)%11, rp=(r+1)%11, cm=(c+10)%11, cp=(c+1)%11; // toroidal
-      float lapA=rdA[rm][c]+rdA[rp][c]+rdA[r][cm]+rdA[r][cp]-4.0f*rdA[r][c];
-      float lapB=rdB[rm][c]+rdB[rp][c]+rdB[r][cm]+rdB[r][cp]-4.0f*rdB[r][c];
-      float ab=rdA[r][c]*rdB[r][c]*rdB[r][c];
-      rdNA[r][c]=constrain(rdA[r][c]+(Da*lapA-ab+f*(1.0f-rdA[r][c])),0.0f,1.0f);
-      rdNB[r][c]=constrain(rdB[r][c]+(Db*lapB+ab-(k+f)*rdB[r][c]),0.0f,1.0f);
-    }
-    for(int r=0;r<11;r++) for(int c=0;c<11;c++){ rdA[r][c]=rdNA[r][c]; rdB[r][c]=rdNB[r][c]; }
-  }
-  clearFrame();
-  for(int r=0;r<11;r++) for(int c=0;c<11;c++){
-    uint8_t val=(uint8_t)constrain(rdB[r][c]*640.0f,0.0f,225.0f);
-    if(val>4) fillCell(r,c,hotColor(val/225.0f,(uint8_t)(150+rdB[r][c]*260.0f),0));
-  }
-  showGrid();
-}
