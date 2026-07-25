@@ -105,7 +105,7 @@ bool snOccupied(int r,int c,int upto);
 void snakeFood();
 void snakeReset();
 void anim_snake(uint32_t at,float dt);
-void anim_iconShow(uint32_t at);
+void anim_tetris(uint32_t at,float dt);
 void anim_bouncingLogo(uint32_t at,float dt);
 void anim_starTunnel3D(uint32_t at,float dt);
 void anim_rippleRain(uint32_t at,float dt);

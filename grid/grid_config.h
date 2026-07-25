@@ -41,7 +41,7 @@
 #define PIN_Y5 19
 
 // ── Animation registry ──
-#define TOTAL_ANIMS   67     // number of animation modes (0..TOTAL_ANIMS-1)
+#define TOTAL_ANIMS   72     // number of animation modes (0..TOTAL_ANIMS-1)
 #define MAX_MODES     96     // upper bound for per-mode arrays (>= TOTAL_ANIMS)
 #define ANIM_DURATION 10000  // (reserved)
 

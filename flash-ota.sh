@@ -6,7 +6,7 @@
 #
 #  Your Mac must be on the togalights WLAN (the controller hosts it).
 #  e.g.     ./flash-ota.sh module toga-mod-7d75c0.local
-#           ./flash-ota.sh webserver toga.local          # always OTA-able
+#           ./flash-ota.sh controller toga-ctl.local     # hosts the module UI
 #           ./flash-ota.sh grid toga-grid.local
 #
 #  No trigger, no OTA mode: the controller's AP is pinned to TOGA_CHANNEL, so

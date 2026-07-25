@@ -16,24 +16,24 @@ sendet. Quellen: [`controller/controller.ino`](controller/controller.ino),
 ```
  ┌─────────────────┬─────────────────┬─────────────────┬─────────────────┐
  │ 12              │  8              │  4              │  0              │
- │  Auto-Modus     │  Farbe          │  – frei –       │  Plus  +        │
+ │  Auto-Modus     │  Farbe          │  Speed-Sweep    │  Plus  +        │
  ├─────────────────┼─────────────────┼─────────────────┼─────────────────┤
  │ 13              │  9              │  5              │  1              │
  │  Helligkeit     │  Hue-Speed      │  Modul-Spot     │  Minus  −       │
  ├─────────────────┼─────────────────┼─────────────────┼─────────────────┤
  │ 14              │ 10              │  6              │  2              │
- │  Geschwindigk.  │  – frei –       │  Blackout       │  Beat-Match     │
+ │  Geschwindigk.  │  Strobe-Speed   │  Blackout       │  Beat-Match     │
  ├─────────────────┼─────────────────┼─────────────────┼─────────────────┤
  │ 15              │ 11              │  7              │  3              │
  │  Strobe-Farbe   │  Castle-Strobe  │  Modus-Strobe   │  Strobe         │
  └─────────────────┴─────────────────┴─────────────────┴─────────────────┘
 ```
 
-**Frei: 4 · 10** — zwei Tasten für neue Funktionen
-(siehe offene Punkte in [TODO.md](TODO.md): Reset-Kombi, globales Strobe,
-Color-Switching). Taste **6** ist jetzt **Blackout**, Taste **5** ist jetzt
-**Modul-Spot** (beide siehe unten). OTA braucht keine davon — es läuft dauerhaft,
-ohne Trigger (Abschnitt 9).
+**Alle 16 Tasten sind belegt.** Taste **4** ist jetzt **Speed-Sweep** (Animations-
+Geschwindigkeit fährt automatisch ein min→max→min-Dreieck), Taste **10** ist jetzt
+**Strobe-Speed** (globaler Strobe-Takt für alle drei Strobes). Taste **6** =
+**Blackout**, Taste **5** = **Modul-Spot** (alle unten beschrieben). OTA braucht
+keine Taste — es läuft dauerhaft ohne Trigger (Abschnitt 9).
 
 ### Navigation
 
@@ -99,6 +99,19 @@ Module – bei den Modulen greift der Deckel nach deren Gain-Trim, ein Modul auf
 200 % Gain blitzt also nicht heller als die Wand. Castle-Strobe (11) und
 Modus-Strobe (7) sind davon nicht betroffen.
 
+**Gleicher Takt auf jedem Modus (Fix):** Alle **drei** Strobes – Strobe (3),
+Modus-Strobe (7) und Castle-Strobe (11) – teilen sich **eine** globale
+Strobe-Speed und laufen jetzt mit **voller Loop-Rate** auf einem absoluten
+Zeitraster. Früher lief nur die Strobe-Taste (3) so; Modus- und Castle-Strobe
+wurden nur so oft abgetastet, wie der gerade laufende Modus rendern konnte – auf
+einem schweren Modus (viel Rechenlast) also seltener, wodurch **derselbe** Strobe
+mal schnell, mal langsam, mal scheinbar gar nicht lief. Der **Modus-Strobe**
+rendert die laufende Animation außerdem nur noch **einmal pro Blitz** und hält das
+Bild, statt sie während des ganzen An-Fensters neu zu berechnen – das nahm dem
+Controller die Last und hält den Takt modusunabhängig gleich. Ergebnis: alle
+Strobes blitzen auf jedem Modus im **selben** Rhythmus; die Speed (Taste 10 oder
+eine Strobe-Taste halten + `+`/`−`) wirkt auf alle drei gleich.
+
 ### Modul-Spot (Taste 5) — momentary, nur Module
 
 **Solange gehalten** zeigen **alle mit der Control Unit verbundenen Module** einen
@@ -122,29 +135,37 @@ Tippen schaltet durch vier **Stimmungen**: 1 → 2 → 3 → 4 → 1 … Jede St
 eine feste Auswahl von Modi mit einem eigenen Wechselintervall. Die Taste blinkt
 (~2 Hz) in der Farbe der laufenden Stimmung; ist der Automodus aus, bleibt sie dunkel.
 
-**Anzeige im Grid:** bei jedem Wechsel blendet die Wand oben rechts **`A1`…`A4`**
-ein – 1 s lang, in der Eigenfarbe der Stimmung, also in derselben Farbe, in der
-Taste 12 gerade blinkt (Tint inklusive: die Ziffer dreht sich mit der Wand mit).
-Das `A` trägt dabei die Aussage, nicht die Farbe – `A2` und Modus 2 würden sich
-sonst nur im Farbton unterscheiden, und der Tint schiebt die Stimmungsfarben
-übereinander (Stimmung 2 landet bei Tint 150 auf dem Grün von Stimmung 4).
+**Anzeige im Grid:** Im Auto-Modus wird **keine Modus-Nummer** eingeblendet – die
+Wand läuft still durch. Nur beim **Weiterschalten der Stimmung mit Taste 12**
+blendet die Wand oben rechts **`A1`…`A4`** ein – 1 s lang, in der Eigenfarbe der
+Stimmung, also in derselben Farbe, in der Taste 12 gerade blinkt (Tint inklusive:
+die Ziffer dreht sich mit der Wand mit). Das `A` trägt dabei die Aussage, nicht die
+Farbe – `A2` und Modus 2 würden sich sonst nur im Farbton unterscheiden, und der
+Tint schiebt die Stimmungsfarben übereinander (Stimmung 2 landet bei Tint 150 auf
+dem Grün von Stimmung 4).
+
+> Die automatischen **Moduswechsel** selbst blenden nichts ein (früher blitzte bei
+> jedem Auto-Schritt die Modus-Nummer auf – das ist bewusst entfernt). Ein manueller
+> `+`/`−`-Schritt blendet die Modus-Nummer weiterhin ein.
 
 Beim **Ausschalten** erscheint nichts: das passiert nur durch einen manuellen
 `+`/`−`-Schritt, der ohnehin schon die Modus-Nummer einblendet, oder durch einen
 Ausfall der Steuereinheit – dort wäre ein `A0` an der Wand die Meldung eines
 Defekts als Einstellung.
 
-| Auto | Stimmung | Wechsel bei Speed 1.0 | Inhalt | LED bei Farbe 0 |
-|-----:|----------|----------------------:|--------|-----------------|
-| 1 | **Ruhe** | 45 s | Aurora, Lava, Breathe, Plasma, Sunset, Clouds, Sine, Levitate … | eisblau |
-| 2 | **Space** | 30 s | Warp, Starfield, Galaxy, Black Hole, Nebulae, Planeten, Asteroiden … | violett |
-| 3 | **Party** | 12 s | Binary Rain, Fireworks, Confetti, VU, Shockwave, Pulsar, Rain … | orangerot |
-| 4 | **Show** | 20 s | Tetris, Snake, Stickman, Smiley, Eye, Aliens, Invaders, Text … | grün |
+| Auto | Stimmung | Wechsel | Inhalt (aktuelle Auswahl) | LED bei Farbe 0 |
+|-----:|----------|--------:|---------------------------|-----------------|
+| 1 | **Ruhe** | 60 s | Aurora, LavaLamp, Clouds3D, SineWaves, Levitate, Heartglow, LiquidMetal, Cymatics | eisblau |
+| 2 | **Space** | 60 s | StarfieldWarp, Warp, StarTunnel3D, SpiralGalaxy, BlackHole2, Wormhole, Supernova, Horsehead, EarthWindow, ShootingStars, Starfield2, StarsFlying | violett |
+| 3 | **Party** | 60 s | BinaryRain, SquareRain, Fireworks, Firework2, Confetti, VuColumns, VuGrid, ShockwaveChain, Pulsar, SpiralEject, Earthquake, RippleRain, RainUp, Rain2 | orangerot |
+| 4 | **Show** | 60 s | Snake, Stickman, PaddleBall, Smiley, Eye, Aliens, Tetris, BouncingLogo, TextTOGA, Radar, WarningLight | grün |
 
-**Tempo:** das Wechselintervall hängt an der **Geschwindigkeit** (Taste 14) –
-Tabellenwert geteilt durch die Geschwindigkeit. Speed 4.0 wechselt also 4× so
-schnell (Party dann alle 3 s), Speed 0.1 zehnmal so langsam. Die Änderung wirkt
-sofort auf den **laufenden** Modus, nicht erst auf den nächsten.
+**Tempo:** das Wechselintervall ist **fix** – standardmäßig **60 s** pro Modus, für
+alle vier Stimmungen gleich – und wird nur in der **Web-UI** (Modul-Manager,
+Intervall-Kopf) gesetzt. Es hängt **nicht** mehr an der Geschwindigkeit (Taste 14):
+die Speed skaliert nur die Animation selbst, nicht den Auto-Takt. Die Reihenfolge
+innerhalb einer Stimmung ist bei jedem Start neu gemischt (Fisher-Yates) und öffnet
+nie zweimal hintereinander auf demselben Modus.
 
 **LED-Farbe:** die Werte in der Tabelle sind die Eigenfarbe der Stimmung, also
 das Bild bei Farbe = 0. Darauf kommt der Grid-Tint (Taste 8 + Hue-Speed) obendrauf –
@@ -172,7 +193,9 @@ nach einem Neustart läuft wieder der zuletzt von Hand gewählte Modus.
 | Taste | Funktion | Bedienung | Wirkung | LED |
 |------:|----------|-----------|---------|-----|
 | 2 | **Beat-Match** | im Takt tippen (~4 Taps) · **1× tippen + 2 s warten = aus** | getapptes Tempo als **Glow-Rhythmus** (nicht Geschwindigkeit) | dunkelrot, pulsiert im erkannten Takt mit |
+| 4 | **Speed-Sweep** | tippen (Umschalter) | die **Animationsgeschwindigkeit** fährt automatisch ein min→max→min-Dreieck (Periode per Web-UI); Module laufen synchron mit; erneut tippen = aus | orange, blinkt bei aktivem Sweep |
 | 6 | **Blackout** | tippen (Umschalter) | Grid **und** Module werden schwarz; erneut tippen = zurück | weiß, hell wenn aktiv, sonst schwacher Marker |
+| 10 | **Strobe-Speed** | **1× tippen** → Justiermodus, dann `+`/`−` | globaler **Strobe-Takt** für alle drei Strobes (3/7/11) gemeinsam; alternativ: eine Strobe-Taste halten + `+`/`−` | Meter blau→rot |
 
 ### Blackout (Taste 6)
 
@@ -219,7 +242,7 @@ Automodus (0 = aus, 1–4), den **Blackout** (an/aus) und die drei Strobe-Zustä
 
 | Parameter | Taste | Schritt | Bereich | Verhalten am Ende |
 |-----------|------:|---------|---------|-------------------|
-| Helligkeit | 13  | ±5   | 1 … 128 | begrenzt, pro Modus gespeichert |
+| Helligkeit | 13  | ±5   | 0 … 255 | begrenzt (0 = komplett aus, 255 = volle Helligkeit), pro Modus gespeichert |
 | Geschwindigkeit | 14  | ±0.1 | 0.1 … 4.0 | begrenzt; regelt zusätzlich das Wechseltempo des Automodus |
 | Farbe (Hue-Basis) | 8 | ±6   | ganzer Farbkreis | läuft um |
 | Strobe-Farbe | 15  | ±6   | ganzer Farbkreis | läuft um |
@@ -347,8 +370,9 @@ auseinanderlaufen.
 
 **Unterschiede zum Grid**
 
-- **Modus-Schritte werden ignoriert.** Ein Modul sitzt auf einem festen Effekt
-  (9 zur Auswahl), der vor Ort per Serial gewählt wird.
+- **Modus-Schritte werden ignoriert.** Ein Modul spiegelt den absoluten
+  Grid-Modus 1:1 („folgt Grid"), oder es sitzt auf einem festen Modus / eigenen
+  Effekt (siehe [Eigenständiger Betrieb](#eigenständiger-betrieb-farbe--effekt--auto-tanz)).
 - **Castle-Strobe** wird zum Vollflächen-Blitz in der Tint-Farbe — ein Modul hat
   keinen Font für „CASTLE / 2026" und oft nur 8 Zeilen.
 - **Keine AGC.** Stattdessen ein einmaliger `gain`-Trim pro Modul (die AGC des
@@ -365,40 +389,78 @@ serielle Konsole (115200), Werte liegen im NVS:
 | `w <n>` / `h <n>` | Spalten / Zeilen · `h 1` = einfacher Streifen |
 | `leds <n>` | Kurzform für `w n` + `h 1` |
 | `pin <n>` | Daten-GPIO: 4, 5, 16, 17, 18 oder 21 |
-| `effect <0-8>` | 0 singleColor · 1 starfield · 2 glimmer · 3 rainbowGlitter · 4 confetti · 5 sinelon · 6 juggle · 7 bpm · 8 aus |
+| `effect <0-67>` | Modul auf **einen** Grid-Modus festnageln · `effect off` = aus · `effect -1` / `follow` = dem Grid-Modus folgen (Standard) |
+| `local <0-9>` | **eigenständiger** Effekt (kein Grid nötig): 0 Solid · 1 Atmen · 2 Puls · 3 Komet · 4 Funkeln · 5 Feuer · 6 Regenbogen · 7 Regenbogen-Fluss · 8 Regenbogen-Plasma · 9 Regenbogen-Funkeln |
+| `auto <0-2>` | eigenständiges **Tanz-Programm**: 0 Mix · 1 Farbe · 2 Regenbogen (wechselt die Effekte selbst durch) |
+| `color <0-255>` | **Farbe** für den eigenständigen Betrieb: 0 = nativ (kein Tint), 1…255 = Farbton. Wirkt nur, wenn das Modul **nicht** „folgt Grid" ist |
 | `gain <10-200>` | Helligkeits-Trim in %, gegen das laufende Grid einstellen |
-| `bmon <0/1>` | Li-Ion-Unterspannungsschutz aus/ein (Default **aus**; sofort persistent). Bei `1` misst das Modul alle 10 s die Zellspannung (GPIO34); nach 3× < Cutoff → Deep-Sleep, LED-Pin hochohmig, Aufwachen nur per echtem Power-Cycle. `battVolt` steht im Webserver-UI und in `show`. |
-| `save` / `reboot` | `effect` und `gain` wirken sofort; `w`/`h`/`pin` erst nach `save` + `reboot` |
+| `bmon` | Li-Ion-Unterspannungsschutz — **fest an, nicht schaltbar** (der Befehl meldet das nur). Das Modul misst alle 10 s die Zellspannung (GPIO34); nach 3× < Cutoff (3,30 V) → Deep-Sleep, LED-Pin hochohmig, Aufwachen nur per echtem Power-Cycle. **Plausibilitäts-Untergrenze 2,50 V:** liegt der Messwert darunter, ist keine Zelle am Messpfad (Akku-Schalter aus, Betrieb über Ladebuchse) → wird ignoriert, **kein** Deep-Sleep. `battVolt` steht in der Web-UI und in `show`. |
+| `save` / `reboot` | `effect`/`local`/`auto`/`color`/`gain` wirken sofort; `w`/`h`/`pin` erst nach `save` + `reboot` |
 
 Die blaue Onboard-LED zeigt die Verbindung: leuchtet = Control Unit lebt.
 
+### Eigenständiger Betrieb (Farbe · Effekt · Auto-Tanz)
+
+Ein Modul, das **nicht** an die Show gebunden ist — als einzelner Streifen an der
+Wand, auf dem Boden, an der Bar — soll für sich alleine gut aussehen. Sobald ein
+Modul **nicht** auf „folgt Grid" steht, ist es **eigenständig**: es nimmt seine
+Farbe und seinen Effekt nicht mehr vom Grid, sondern aus eigener Einstellung.
+Zurück auf „folgt Grid" → es spiegelt wieder exakt die Wand.
+
+**Farbe.** Eine feste Farbe (`color <0-255>` bzw. die Farbfelder in der Web-UI).
+Die eigenständigen Effekte werden in genau dieser Farbe gemalt; `0` = nativ
+(kein Tint). Bei den Regenbogen-Effekten ist die Farbe egal — die drehen den
+ganzen Farbkreis selbst.
+
+**Effekte** — schlicht und gut aussehend auf **einem** Streifen, nicht die
+2D-Zitate des Grids:
+
+| Gruppe | Effekte |
+|--------|---------|
+| **feste Farbe, pulsiert & fadet** | Solid · Atmen · Puls · Komet · Funkeln · Feuer |
+| **Regenbogen** | Regenbogen (ganzer Streifen zyklisch) · Regenbogen-Fluss · Regenbogen-Plasma · Regenbogen-Funkeln |
+
+**Auto-Tanz.** Statt einen Effekt fest zu wählen, lässt ein Auto-Programm das
+Modul selbst durch eine Auswahl wechseln (~14 s, mit der Geschwindigkeit skaliert)
+— zum Tanzen, ohne dass jemand am Handy sitzt:
+
+| Programm | Inhalt |
+|----------|--------|
+| **Mix** | Farbfades **und** Regenbogen abwechselnd |
+| **Farbe** | nur die Fades in der festen Farbe (Atmen, Puls, Komet, Funkeln) |
+| **Regenbogen** | nur die Regenbogen-Effekte |
+
+Alles per Serial (`local`/`auto`/`color`) **oder** in der Web-UI: pro Modul ein
+gruppiertes **Effekt**-Menü (Auto-Tanz · Standalone · folgt Grid · Grid-Modi) und
+eine **Farb**-Reihe. Die Auswahl liegt im NVS und übersteht einen Neustart. Ein
+Modul ohne Controller (Notmodus, siehe [Abschnitt 9](#9-ota--firmware-über-die-luft))
+serviert dieselbe Seite selbst — so lässt sich ein einzelner Streifen komplett
+ohne Grid einrichten.
+
 **Effekt und Gain gehen auch per Weboberfläche** — siehe
-[Abschnitt 8](#8-webserver-module-einzeln-ansteuern). Über Web gesetzt werden
+[Abschnitt 8](#8-weboberfläche-module-einzeln-ansteuern). Über Web gesetzt werden
 beide sofort **gespeichert** (kein `save` nötig): die Konsole hat man vor der
 Nase und kann korrigieren, das Handy nicht — ein Wert, der beim nächsten
 Einschalten still zurückspringt, wäre dort ein Fehlerbericht.
 
-## 8. Webserver (Module einzeln ansteuern)
+## 8. Weboberfläche (Module einzeln ansteuern)
 
-Ein eigener ESP32 (`webserver/webserver.ino`), der nur zuhört und eine Web-UI
-ausliefert — er treibt keine LEDs und steuert die Show nicht. Details und
-Einrichtung: [`webserver/README.md`](webserver/README.md).
+Die Control Unit liefert die Web-UI selbst aus — erreichbar unter
+`toga-ctl.local` im gleichen AP, den sie ohnehin aufmacht. Kein eigenes Board
+mehr (die frühere `webserver/`-Variante ist entfernt, sie ist in die Control
+Unit gefaltet). Die Seite treibt keine LEDs und steuert die Show nicht — sie
+hört nur zu und konfiguriert Module.
 
 Jedes Modul meldet sich **1×/s** von selbst (`TogaHelloMsg`); die Seite listet
 alles, was sie hört, mit MAC, Geometrie, Pin, Gruppe, laufendem Effekt, Gain,
-Uptime und Controller-Verbindung. Pro Modul einstellbar: **Effekt** (fest oder
-„folgt Grid") und **Gain**. Gesendet wird `TogaModCfgMsg`, adressiert an **eine
+Uptime und Controller-Verbindung. Pro Modul einstellbar: **Effekt** (Grid-Modus,
+eigenständiger Effekt, Auto-Tanz oder „folgt Grid"), **Farbe** (für den
+eigenständigen Betrieb) und **Gain**. Gesendet wird `TogaModCfgMsg`, adressiert an **eine
 MAC** — jedes andere Modul verwirft das Paket.
 
 Module haben vorher nie gesendet. Das Hello ist ein **Bericht, nie ein Befehl**:
 ein Modul wendet weiterhin keine eigenen Schritte an und spiegelt den
 Grid-Zustand vollständig. Geht ein Hello verloren, veraltet nur die Liste.
-
-> ⚠ **Der Router muss auf Kanal 1 (`TOGA_CHANNEL`) stehen.** Der Webserver ist
-> der einzige Knoten, der sich in ein WLAN einbucht — und ein ESP32 hat *ein*
-> Radio: er erbt damit den Router-Kanal, während alle anderen auf Kanal 1
-> funken. Passt das nicht, verbindet sich das Board normal, liefert die Seite
-> normal aus und sieht **kein einziges Modul**. Die Seite warnt in dem Fall rot.
 
 ## 7. Protokoll & Build
 
@@ -417,7 +479,7 @@ Die Structs werden nicht mehr von Hand dupliziert.
   Heartbeat braucht das nicht — er kommt 10×/s ohnehin wieder.
 - **Gruppen-ID** steckt im Paket (0 = alle); die Control Unit sendet immer 0.
   Gezieltes Ansteuern **einzelner** Module läuft nicht über Gruppen, sondern
-  über die MAC im `TogaModCfgMsg` des Webservers (Abschnitt 8).
+  über die MAC im `TogaModCfgMsg` der Weboberfläche (Abschnitt 8).
 
 **Voraussetzung zum Bauen:** `libraries/TogaProto` muss in den Arduino-Libraries
 verlinkt sein — einmalig:
@@ -444,8 +506,8 @@ arduino-cli compile --fqbn "$FQBN" --libraries ./libraries --upload -p <port> gr
 
 Wird das Wire-Format geändert (`TOGA_VERSION`, aktuell **4** — v4 brachte
 Batterie-Telemetrie im Hello + `battMon`-Toggle im ModCfg), müssen **Grid,
-Control Unit, alle Module und der Webserver zusammen** neu geflasht werden. Ein
-Knoten auf einer alten Version ist für alle anderen still unsichtbar.
+Control Unit und alle Module zusammen** neu geflasht werden. Ein Knoten auf
+einer alten Version ist für alle anderen still unsichtbar.
 
 ## 9. OTA — Firmware über die Luft
 
@@ -469,7 +531,6 @@ mehr, und jedes Gerät ist unter seinem eigenen Namen erreichbar.
 | Grid | `toga-grid.local` |
 | Control Unit | `toga-ctl.local` |
 | Modul | `toga-mod-<letzte 3 MAC-Bytes>.local` (z.B. `toga-mod-7d75c0.local`) |
-| Webserver | `toga.local` |
 
 **Flashen** (der Mac muss dafür in `togalights` sein — das Netz hat kein
 Internet, das ist Absicht):
@@ -477,7 +538,6 @@ Internet, das ist Absicht):
 ./flash-ota.sh module toga-mod-7d75c0.local
 ./flash-ota.sh grid   toga-grid.local
 ./flash-ota.sh controller toga-ctl.local
-./flash-ota.sh webserver  toga.local
 ```
 macOS fragt beim ersten Mal, ob `python3` eingehende Verbindungen annehmen darf
 — das muss erlaubt werden, sonst hängt der Upload bei „Sending invitation" (das

@@ -151,30 +151,32 @@ void anim_sineWaves(uint32_t at){
 // 74 — ROCKET FIRE: a wide rocket riding a big flame plume with billowing smoke.
 void anim_rocketFire(uint32_t at){
   clearFrame(); float tf=at*0.001f;
-  // ── smoke: clouds billowing out below the exhaust ──
+  // ── smoke: clouds billowing out below the exhaust (world +y renders DOWNWARD,
+  //    so the rocket flies UP → flame/exhaust live at POSITIVE y, below it) ──
   for(int i=0;i<44;i++){ float ph=fxfract(tf*0.5f+fxhash(i*5.5f));
-    float x=(fxhash(i*1.7f)-0.5f)*48.0f*(0.4f+ph); float y=-28.0f-ph*30.0f;
+    float x=(fxhash(i*1.7f)-0.5f)*48.0f*(0.4f+ph); float y=28.0f+ph*30.0f;
     uint8_t g=(uint8_t)((70.0f+fxhash(i*8.3f)*60.0f)*(1.0f-ph));
     if(g>4) fxSplat(x,y,2.0f+ph*4.2f,2.4f,CRGB(g,g,g)); }
-  // ── fire: big hot plume shooting down from the throat ──
+  // ── fire: big hot plume shooting down (on-wall) from the throat ──
   for(int i=0;i<90;i++){ float ph=fxfract(tf*1.3f+fxhash(i*2.7f));
-    float x=(fxhash(i*3.1f)-0.5f)*20.0f*(0.3f+ph); float y=-6.0f-ph*54.0f; float life=1.0f-ph;
+    float x=(fxhash(i*3.1f)-0.5f)*20.0f*(0.3f+ph); float y=6.0f+ph*54.0f; float life=1.0f-ph;
     uint8_t hue=(uint8_t)(45*life),val=(uint8_t)(255*life),sat=ph<0.2f?110:255;
     fxSplat(x,y,1.0f+ph*2.2f,1.2f,CRGB(CHSV(hue,sat,val))); }
-  for(int j=0;j<6;j++) fxSplat((frand()-0.5f)*6.0f,-6.0f-frand()*3.0f,2.6f,1.4f,CRGB(255,245,220)); // bright throat
-  // ── wide rocket body + nose cone ──
+  for(int j=0;j<6;j++) fxSplat((frand()-0.5f)*6.0f,6.0f+frand()*3.0f,2.6f,1.4f,CRGB(255,245,220)); // bright throat
+  // ── wide rocket body + nose cone (y negated → nose points UP on the wall) ──
   const float W=10.0f;                         // half-width — noticeably wider
   for(int pass=0;pass<2;pass++) for(int s=0;s<12;s++){ float base=pass?Y_POS[s]:X_POS[s];
     for(int n=1;n<=121;n++){ float other=(float)n-CENTER; float x=pass?other:base,y=pass?base:other;
+      y=-y;                                                                            // 180° vertical mirror
       float v=0.0f; uint8_t hue=160,sat=30;
       if(y>-2.0f && y<34.0f && fabsf(x)<W){ v=1.0f-0.5f*fabsf(x)/W; }                  // cylinder body
       else if(y>=34.0f && y<50.0f){ float w=W*(1.0f-(y-34.0f)/16.0f);                 // nose cone
         if(fabsf(x)<w){ v=0.9f*(1.0f-0.5f*fabsf(x)/(w+0.01f)); hue=0; sat=200; } }
       if(v>0.02f) fxAdd(pass?false:true,s+1,n,CRGB(CHSV(hue,sat,(uint8_t)(v*255.0f))),v);
     } }
-  fxStreak(-W,-2,-W-6,-8,0.6f,1.2f,CRGB(200,20,20));   // fins
-  fxStreak( W,-2, W+6,-8,0.6f,1.2f,CRGB(200,20,20));
-  fxSplat(0,20,2.4f,1.2f,CRGB(120,200,255));           // window
+  fxStreak(-W,2,-W-6,8,0.6f,1.2f,CRGB(200,20,20));   // fins (mirrored to the base)
+  fxStreak( W,2, W+6,8,0.6f,1.2f,CRGB(200,20,20));
+  fxSplat(0,-20,2.4f,1.2f,CRGB(120,200,255));         // window (up near the nose)
   showGrid();
 }
 // 75 — LIGHTHOUSE: a bright narrow beam sweeping steadily around from the lamp.
@@ -201,7 +203,7 @@ void anim_aliens(uint32_t at){
   for(int i=0;i<3;i++){
     float hop   = fabsf(sinf(tf*2.2f+i*2.1f));            // springy bounce
     float cx    = -34+i*34.0f + sinf(tf*0.9f+i)*4.0f;     // wander side to side
-    float cy    = -6.0f + hop*14.0f;                      // hop up
+    float cy    = -17.0f + hop*36.0f;                     // hop up — much bigger vertical travel (~2.5x)
     float squash= 1.0f+0.22f*sinf(tf*4.4f+i);             // wobble/squash
     uint8_t hue = 90+i*22;
     fxSplat(cx,cy,9.0f*squash,3.0f,CRGB(CHSV(hue,220,80)));
@@ -278,16 +280,17 @@ void anim_clouds3d(uint32_t at){
 // 83 — PULSING HEART: a clear heart silhouette (two top lobes, pointed bottom) beating.
 void anim_pulseHeart(uint32_t at){
   clearFrame(); float tf=at*0.001f;
-  // lub-dub double beat that briefly swells the heart
+  // lub-dub double beat that briefly swells the heart — eased for a smooth pulse
   float b=fmodf(tf*1.4f,1.0f);
-  float beat=constrain(expf(-b*9.0f)+0.7f*expf(-fabsf(b-0.20f)*9.0f),0.0f,1.0f);
+  float beat=constrain(expf(-b*7.0f)+0.6f*expf(-fabsf(b-0.22f)*7.0f),0.0f,1.0f);
+  beat=beat*beat*(3.0f-2.0f*beat);                         // smoothstep ease — no harsh steps
   float sc=1.0f/(22.0f - beat*3.0f);                        // grow on the beat
   for(int pass=0;pass<2;pass++) for(int s=0;s<12;s++){ float base=pass?Y_POS[s]:X_POS[s];
     for(int n=1;n<=121;n++){ float other=(float)n-CENTER;
-      // world +y is up; the classic heart curve puts the two lobes on top and the
-      // cusp at the bottom, so DON'T flip y. Nudge down so it sits centred.
-      float x=(pass?other:base)*sc, y=(pass?base:other)*sc + 0.2f;
-      float xx=x*x,yy=y*y; float h=(xx+yy-1.0f); float f3=h*h*h-xx*y*yy;   // <0 inside heart
+      // world +y renders DOWNWARD on the wall, so negate y to flip the classic
+      // heart curve upright: two lobes on TOP, pointed cusp at the BOTTOM.
+      float x=(pass?other:base)*sc, y=-((pass?base:other)*sc) - 0.2f;
+      float xx=x*x,yy=y*y; float h=(xx+yy-1.0f); float f3=h*h*h-1.3f*xx*y*yy;  // <0 inside; 1.3 deepens the top notch
       float v=f3<0?1.0f:constrain(1.0f-f3*5.0f,0.0f,1.0f);                 // soft anti-aliased edge
       if(v>0.03f){ uint8_t sat=(uint8_t)(240-40.0f*(1.0f-v));             // edge blushes lighter
         fxAdd(pass?false:true,s+1,n,CRGB(CHSV(0,sat,(uint8_t)(v*(150+beat*105)))),1.0f); }
@@ -438,8 +441,8 @@ void anim_superHexagon(uint32_t at){
       float hexval=d*cosf(haf*1.0472f);                      // pi/3: hexagon level set (not a circle)
       // background — two shades, radial falloff, whole-field pulse
       float radial=constrain(1.0f-d/72.0f,0.0f,1.0f);
-      float v=((sect&1)?0.09f:0.17f)*pulse*radial;
-      CRGB col=CRGB(CHSV((uint8_t)(tf*18.0f),190,255));
+      float v=((sect&1)?0.040f:0.075f)*pulse*radial;       // dim glow — let the hexagon rings dominate
+      CRGB col=CRGB(CHSV((uint8_t)(tf*18.0f),210,255));    // a touch more saturated so it reads as colour, not wash
       // central hexagon
       float ce=1.0f-fabsf(hexval-CORE)/1.3f; if(ce>v){ v=ce; col=CRGB(CHSV((uint8_t)(tf*18.0f+20),150,255)); }
       // walls (every side lit except the gap sector)

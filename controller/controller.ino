@@ -10,8 +10,8 @@
 //  code below are LOGICAL; PHYS2LOG/LOG2PHYS translate at the two I/O edges.
 //  Physical layout after the rotation (what the operator actually presses):
 //     phys 0 Mode+   1 Mode−   2 Beat    3 Strobe
-//          4 free    5 free    6 Blackout 7 Mode-Strobe
-//          8 Color   9 Hue-spd 10 free   11 Castle-Strobe
+//          4 SpeedSweep 5 Spot 6 Blackout 7 Mode-Strobe
+//          8 Color   9 Hue-spd 10 StrobeSpeed 11 Castle-Strobe
 //         12 Auto   13 Helligkeit 14 Speed 15 Strobe-colour
 //
 //  DEFAULT:  + (3) / − (7) change MODE.  0 = Auto-Modus.   (logical numbers)
@@ -24,23 +24,25 @@
 //    dims the pad. Tap again to exit. Everything persists across power-off.
 //  Beat match (11): just tap the beat, ~4 taps lock it. Each tap is forwarded
 //    raw and the GRID does the tempo detection → glow pulse. Speed is untouched.
-//  Strobe (15): momentary while held. Hold 15 + press +/- → tune the gap
-//    between flashes (the flash itself is fixed at its shortest).
+//  Strobe (15): momentary while held. Strobe(15)/Mode-strobe(14)/Castle(13) all
+//    flash on ONE global strobe speed. Hold any of them + press +/- → tune that
+//    speed live; or TAP StrobeSpeed (phys 10 / logical 9) to enter its adjust mode
+//    and use +/-. Faster = shorter period; on:off ratio is a fixed 1:2 (typical strobe).
 //  Auto (0): tap to cycle the four moods 1→2→3→4→1 (button blinks in the
 //    mood's colour). Any manual mode change with +/- turns it off again.
 //
-//  Params (logical):  4 Helligkeit (own machine) · 1 Color · 12 Strobe-colour · 8 Speed · 5 Hue-speed
+//  Params (logical):  4 Helligkeit (own machine) · 1 Color · 12 Strobe-colour · 8 Speed · 5 Hue-speed · 9 Strobe-speed (tap-toggle)
 // ═══════════════════════════════════════════════════════
 #include <Arduino.h>
 #include <toga_proto.h>          // the wire format, shared with grid/ and module/
 #include <toga_ota.h>            // always-on firmware update; we host the AP
 #include <Wire.h>
 #include <Preferences.h>          // NVS: persist this controller's own pad-brightness factor
-#include <WebServer.h>           // the phone module-manager UI (folded in from webserver/)
+#include <WebServer.h>           // the phone module-manager UI (was standalone webserver/, now folded in here — that sketch is deleted)
 #include <ESPmDNS.h>             // advertise the page over mDNS on top of the OTA instance
 #include "Adafruit_NeoTrellis.h"
 
-// ── Module manager (folded in from webserver/) ──────────
+// ── Module manager (formerly the standalone webserver/ sketch, now here) ──────────
 // We host the AP, so the phone page that lists every module and configures it
 // now lives here too — no separate board. Modules announce themselves once a
 // second with a TogaHelloMsg; we keep a table of who is out there and send a
@@ -64,6 +66,8 @@ struct ModEntry {
   uint8_t  followMask;           // TOGA_FOLLOW_* — which grid functions the module slaves to
   uint8_t  gap;                  // output gap: 1 = every LED, N = light every Nth
   uint8_t  floor;                // floor-strip flow: 0 off, 1 fwd, 2 rev
+  uint16_t fwBuild;              // firmware fingerprint (TOGA_FW_BUILD) — spot a stale module
+  uint8_t  localHue;             // independent-mode colour (0 = native) (v10)
   char     name[16];             // user label (module-side, echoed in its hello)
   uint32_t lastSeen;             // millis() on THIS node
 };
@@ -96,7 +100,7 @@ Adafruit_NeoTrellis trellis;
 struct { uint8_t brightness; uint8_t globalBrightness; float animSpeed; uint8_t hueBase,hueAuto,hueSpeed,strobeHue;
          uint8_t tintR,tintG,tintB, sColR,sColG,sColB;
          uint16_t beatMs; uint8_t beatPhase; uint32_t beatAt;
-         int16_t animIndex; } gs = {40,BRI_DEFAULT,1.0f,0,0,0,0, 255,0,0, 200,200,200, 0,0,0, 0};
+         int16_t animIndex; uint8_t modeFactor; uint8_t strobeSpeed; uint16_t autoDwellS; uint16_t sweepPeriodS; } gs = {40,BRI_DEFAULT,1.0f,0,0,0,0, 255,0,0, 200,200,200, 0,0,0, 0, BRICOEF_MAX, STROBE_SPEED_DEF, AUTO_INT_DEF, SWEEP_INT_DEF};
 
 // ── Brightness edit mode (button 4 / Helligkeit) ──
 // tap 4 → GLOBAL (slow pulse) · hold 2s → MODE factor (fast pulse) · hold 10s →
@@ -127,7 +131,9 @@ static const uint8_t LOG2PHYS[16] = {12, 8, 4, 0, 13, 9, 5, 1, 14,10, 6, 2, 15,1
 // edit-mode state machine (global / per-mode / controller), so it is absent here.
 int paramTarget(int b){ switch(b){case 8:return TOGA_P_SPEED;
                                  case 1:return TOGA_P_COLOR;case 12:return TOGA_P_STROBEHUE;
-                                 case 5:return TOGA_P_HUESPEED;} return -1; }
+                                 case 5:return TOGA_P_HUESPEED;
+                                 case 9:return TOGA_P_STROBESPEED;}  // phys 10: global strobe speed (tap to toggle)
+                        return -1; }
 bool isParamBtn(int b){ return paramTarget(b)>=0; }
 
 bool     btnDown[16]={}; uint32_t btnDownT[16]={};
@@ -144,6 +150,13 @@ uint8_t autoMode=TOGA_AUTO_OFF;
 // must bring the wall back, never boot into black. The grid/modules gate it on
 // senderAlive, so switching this unit off also releases it.
 bool gBlackout=false;
+
+// ── Speed sweep (phys key 4 / logical 2) ──
+// A LATCH like blackout: each press flips it, rides every packet in the flags. While
+// on, the GRID sweeps the animation speed min→max→min on an absolute clock (see
+// TOGA_F_SWEEP / togaSweepSpeed in toga_proto.h). RAM only; the grid gates it on
+// senderAlive, so a controller that goes away releases the sweep.
+bool gSweep=false;
 
 // ── Interaction state machine ──
 enum { ST_DEFAULT, ST_ADJUST };
@@ -178,13 +191,16 @@ void onReceive(const uint8_t*mac,const uint8_t*data,int len){
   // it — that blink is the operator's proof the grid actually locked on.
   gs.beatMs=m.beatMs; gs.beatPhase=m.beatPhase; gs.beatAt=millis();
   gs.animIndex=m.animIndex;                    // for the module page's grid-mode readout
+  gs.modeFactor=m.modeFactor;                  // current mode's brightness factor — drives the +/- at-limit blink
+  gs.strobeSpeed=m.strobeSpeed;                // global strobe speed — button-9 meter + at-limit blink
+  gs.autoDwellS=m.autoDwellS; gs.sweepPeriodS=m.sweepPeriodS;   // web-UI timing header (echoed for display)
 }
 uint16_t txSeq=0;
 void sendCmd(uint8_t cmd,uint8_t target,int16_t arg){
   TogaCmdMsg m={};
   togaInitHeader(m.h,TOGA_MSG_CMD,TOGA_GROUP_ALL,++txSeq);   // group 0 = everyone; targeting UI comes later
   m.cmd=cmd; m.target=target; m.arg=arg;
-  m.flags=(btnDown[15]?TOGA_F_STROBE:0)|(btnDown[14]?TOGA_F_MODE_STROBE:0)|(btnDown[13]?TOGA_F_CASTLE_STROBE:0)|(gBlackout?TOGA_F_BLACKOUT:0)|(btnDown[6]?TOGA_F_SPOT:0); // btn6 (phys 5): moving-spot on modules
+  m.flags=(btnDown[15]?TOGA_F_STROBE:0)|(btnDown[14]?TOGA_F_MODE_STROBE:0)|(btnDown[13]?TOGA_F_CASTLE_STROBE:0)|(gBlackout?TOGA_F_BLACKOUT:0)|(btnDown[6]?TOGA_F_SPOT:0)|(gSweep?TOGA_F_SWEEP:0); // btn6 (phys 5): spot · logical 2 (phys 4): speed-sweep latch
   m.autoMode=autoMode;                                       // state, carried by every packet
   // Unicast retried in hardware; broadcast is unacked and never retried. The
   // heartbeat re-sends the strobe flags 10x/s anyway, but mode/param/beat are
@@ -220,6 +236,8 @@ void drainHellos(uint32_t t){
     e->followMask=m.followMask;
     e->gap=m.gap;
     e->floor=m.floorFlow;
+    e->fwBuild=m.fwBuild;
+    e->localHue=m.localHue;
     memcpy(e->name,m.name,sizeof(e->name)); e->name[sizeof(e->name)-1]=0;
     e->lastSeen=t;
   }
@@ -242,12 +260,14 @@ bool parseMac(const String& s,uint8_t out[6]){
 // registered on TOGA_CHANNEL (no channel-0 hack: we ARE the AP on that channel).
 void sendModCfg(const uint8_t mac[6],uint8_t effectPin,uint8_t gain,uint8_t battMon=TOGA_CFG_KEEP,
                 uint8_t followMask=TOGA_FOLLOW_KEEP,uint16_t ledCount=0,const char* name=nullptr,
-                uint8_t gap=TOGA_GAP_KEEP,uint8_t floorFlow=TOGA_FLOOR_KEEP){
+                uint8_t gap=TOGA_GAP_KEEP,uint8_t floorFlow=TOGA_FLOOR_KEEP,
+                uint8_t localHue=TOGA_LOCALHUE_KEEP){
   TogaModCfgMsg m={};
   togaInitHeader(m.h,TOGA_MSG_MODCFG,TOGA_GROUP_ALL,++txSeq);
   memcpy(m.mac,mac,6);
   m.effectPin=effectPin; m.gain=gain; m.battMon=battMon;
   m.followMask=followMask; m.ledCount=ledCount; m.gap=gap; m.floorFlow=floorFlow;
+  m.localHue=localHue;   // KEEP by default — m is zero-init and 0 means "native", not "leave alone"
   if(name && name[0]) strncpy(m.name,name,sizeof(m.name)-1);   // m zero-init → NUL kept; "" = keep
   for(int i=0;i<3;i++) esp_now_send(TOGA_BCAST,(const uint8_t*)&m,sizeof(m));
 }
@@ -266,9 +286,17 @@ void handleModules(){
            ",\"chOk\":"+String(channelOk()?"true":"false")+
            ",\"gridSeen\":"+String((gsSyncSeen && (t-gsSyncAt)<2000)?"true":"false")+
            ",\"gridMode\":"+String(gsSyncSeen?gs.animIndex+1:0)+
+           ",\"autoInt\":"+String(gs.autoDwellS)+
+           ",\"sweepInt\":"+String(gs.sweepPeriodS)+
            ",\"effects\":[";
   for(uint8_t e=0;e<TOGA_EFFECT_COUNT;e++) j+=(e?",\"":"\"")+String(togaEffectName(e))+"\"";
-  j+="],\"follow\":"+String(TOGA_EFFECT_FOLLOW)+",\"mods\":[";
+  j+="],\"locals\":[";
+  for(uint8_t e=0;e<TOGA_LOCAL_COUNT;e++) j+=(e?",\"":"\"")+String(togaLocalEffectName(e))+"\"";
+  j+="],\"autos\":[";
+  for(uint8_t e=0;e<TOGA_LOCAL_AUTO_COUNT;e++) j+=(e?",\"":"\"")+String(togaAutoProgName(e))+"\"";
+  j+="],\"localBase\":"+String(TOGA_EFFECT_LOCAL_BASE)+
+     ",\"autoBase\":"+String(TOGA_EFFECT_AUTO_BASE)+
+     ",\"follow\":"+String(TOGA_EFFECT_FOLLOW)+",\"mods\":[";
   bool first=true;
   for(int i=0;i<MAX_MODULES;i++){
     if(!mods[i].used) continue;
@@ -287,6 +315,11 @@ void handleModules(){
        ",\"follow\":"+String(mods[i].followMask)+
        ",\"gap\":"+String(mods[i].gap)+
        ",\"floor\":"+String(mods[i].floor)+
+       ",\"lhue\":"+String(mods[i].localHue)+
+       ",\"batt\":"+String(mods[i].battMv/1000.0,2)+
+       ",\"bmon\":"+String((mods[i].battFlags&TOGA_BATT_F_ENABLED)?"true":"false")+
+       ",\"blow\":"+String((mods[i].battFlags&TOGA_BATT_F_LOW)?"true":"false")+
+       ",\"fw\":"+String(mods[i].fwBuild)+
        ",\"link\":"+String(mods[i].linkAlive?"true":"false")+
        ",\"up\":"+String(mods[i].uptimeS)+"}";
   }
@@ -299,8 +332,17 @@ void handleSet(){
   uint8_t eff=TOGA_CFG_KEEP, gain=0;               // 0 / KEEP = "leave this one alone"
   if(server.hasArg("effect")){
     int e=server.arg("effect").toInt();
-    if(e!=TOGA_EFFECT_FOLLOW && e!=TOGA_EFFECT_IDENTIFY && (e<0||e>=TOGA_EFFECT_COUNT)){ server.send(400,"text/plain","bad effect"); return; }
+    bool ok = e==TOGA_EFFECT_FOLLOW || e==TOGA_EFFECT_OFF || e==TOGA_EFFECT_IDENTIFY
+           || (e>=0 && e<TOGA_EFFECT_COUNT)
+           || togaIsLocalEffect((uint8_t)e) || togaIsAutoEffect((uint8_t)e);
+    if(!ok){ server.send(400,"text/plain","bad effect"); return; }
     eff=(uint8_t)e;
+  }
+  uint8_t lhue=TOGA_LOCALHUE_KEEP;
+  if(server.hasArg("color")){                      // independent-mode colour: 0 = native, 1..255 = hue
+    int h=server.arg("color").toInt();
+    if(h<0||h>255||h==TOGA_LOCALHUE_KEEP){ server.send(400,"text/plain","bad color"); return; }
+    lhue=(uint8_t)h;
   }
   if(server.hasArg("gain")){
     int g=server.arg("gain").toInt();
@@ -337,18 +379,40 @@ void handleSet(){
     name[k]=0;
     if(k==0){ server.send(400,"text/plain","bad name"); return; }
   }
-  sendModCfg(mac,eff,gain,TOGA_CFG_KEEP,follow,leds,name,gap,floor);
+  uint8_t battMon=TOGA_CFG_KEEP;
+  if(server.hasArg("bmon")) battMon=server.arg("bmon").toInt()?1:0;
+  sendModCfg(mac,eff,gain,battMon,follow,leds,name,gap,floor,lhue);
   // No optimistic echo: the row updates when the module's next hello confirms it
   // actually took. The page shows what IS, not what we hope.
   server.send(200,"application/json","{\"sent\":true}");
 }
+// Global timing header: auto-mode dwell and sweep period, in seconds. These live
+// on the GRID (it owns the show clock); we forward ABSOLUTE-value PARAM commands
+// and the grid echoes the applied values back in its sync for the page to show.
+void handleTiming(){
+  bool any=false;
+  if(server.hasArg("auto")){
+    int s=constrain(server.arg("auto").toInt(),TIMING_INT_MIN,TIMING_INT_MAX);
+    sendCmd(TOGA_CMD_PARAM,TOGA_P_AUTOINT,(int16_t)s); gs.autoDwellS=(uint16_t)s; any=true;
+  }
+  if(server.hasArg("sweep")){
+    int s=constrain(server.arg("sweep").toInt(),TIMING_INT_MIN,TIMING_INT_MAX);
+    sendCmd(TOGA_CMD_PARAM,TOGA_P_SWEEPINT,(int16_t)s); gs.sweepPeriodS=(uint16_t)s; any=true;
+  }
+  if(!any){ server.send(400,"text/plain","no field"); return; }
+  server.send(200,"application/json","{\"sent\":true}");
+}
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>TOGA Module</title><style>
 body{font:15px system-ui,sans-serif;margin:0;padding:12px;background:#111;color:#eee}
 h1{font-size:17px;margin:0 0 10px}
 .warn{background:#7a1717;padding:10px;border-radius:6px;margin-bottom:10px;line-height:1.45}
 .bar{color:#8a8a8a;font-size:13px;margin-bottom:10px}
+.timing{background:#1c1c1c;border-radius:8px;padding:10px;margin-bottom:8px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.timing .tl{font-weight:600;color:#eee}
+.timing label{min-width:auto;color:#cfcfcf;display:inline-flex;align-items:center;gap:6px;font-size:13px}
+.timing input{width:68px}
 .m{background:#1c1c1c;border-radius:8px;padding:10px;margin-bottom:8px;border-left:4px solid #2c2c2c}
 .m.on{border-left-color:#2ea043}.m.off{border-left-color:#7a1717;opacity:.65}
 .mac{font-family:ui-monospace,monospace;font-size:13px}
@@ -363,6 +427,10 @@ input[type=number]{width:74px}
 .hint{font-size:11px;color:#7a7a7a}
 label{font-size:12px;color:#8a8a8a;min-width:52px}
 .pill{font-size:11px;padding:2px 6px;border-radius:9px;background:#2c2c2c;color:#9a9a9a}
+.pill.bad{background:#7a1717;color:#fff}
+.sws{display:inline-flex;gap:6px;flex-wrap:wrap}
+.sw{width:22px;height:22px;border-radius:50%;border:2px solid #333;cursor:pointer;display:inline-block}
+.sw.sel{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.2)}
 .empty{color:#8a8a8a;padding:20px 0;line-height:1.5}
 button{background:#2a2a2a;color:#eee;border:1px solid #3a3a3a;border-radius:5px;padding:4px 9px;font:inherit;font-size:12px;cursor:pointer}
 button:hover{background:#3a3a3a}
@@ -370,16 +438,44 @@ button:hover{background:#3a3a3a}
 </style></head><body>
 <h1>TOGA Module</h1>
 <div id="warn"></div><div class="bar" id="bar">…</div>
+<div class="timing">
+  <span class="tl">Intervalle</span>
+  <label>Auto-Modus <input type="number" id="autoInt" min="5" max="600"> s</label>
+  <label>Sweep <input type="number" id="sweepInt" min="5" max="600"> s</label>
+  <span class="hint">Modus-Wechsel im Auto-Modus &middot; Speed-Sweep min&rarr;max&rarr;min</span>
+</div>
 <div id="list"></div>
 <script>
-let EFF=[],OPTS='',FOLLOW=255;
+let EFF=[],LOCALS=[],AUTOS=[],LBASE=100,ABASE=120,OPTS='',FOLLOW=255;
 const F_STROBE=1,F_BRIGHT=2,F_MODE=4,F_BEAT=8,F_BLACK=16;   // mirror toga_proto.h
 const IDENT=201;   // TOGA_EFFECT_IDENTIFY — momentary "blink to find this strip"
 const macid=m=>m.replace(/:/g,'');
+const fwtag=v=>(v||0).toString(16).padStart(4,'0');   // firmware build → 4-hex tag
 function set(mac,q){fetch('/api/set?mac='+encodeURIComponent(mac)+'&'+q)}
-function optsHTML(){ let h='';
+// Global timing header (auto-mode dwell + sweep period, seconds). pend() locks the
+// field the instant it is changed so the 1.5s poll cannot yank it mid-edit (same as
+// the module fields); tick() writes the grid's echoed values back via put().
+const autoIntEl=document.getElementById('autoInt'), sweepIntEl=document.getElementById('sweepInt');
+autoIntEl.onchange=e=>{pend(e.target);fetch('/api/timing?auto='+encodeURIComponent(e.target.value))};
+sweepIntEl.onchange=e=>{pend(e.target);fetch('/api/timing?sweep='+encodeURIComponent(e.target.value))};
+// Independent-mode colour palette. h = FastLED hue sent as ?color= (0 = "Nativ",
+// no tint); c = an approximate CSS colour for the swatch only. The KEEP sentinel
+// (254) is never in this list, so choosing a colour never trips it.
+const PAL=[{n:'Nativ',h:0,c:'#666'},{n:'Rot',h:2,c:'#ff0000'},{n:'Orange',h:24,c:'#ff7a00'},
+  {n:'Gelb',h:64,c:'#ffe000'},{n:'Grün',h:96,c:'#12d100'},{n:'Türkis',h:128,c:'#00d0b0'},
+  {n:'Blau',h:160,c:'#0060ff'},{n:'Violett',h:192,c:'#8a2be2'},{n:'Magenta',h:224,c:'#ff30c0'},{n:'Pink',h:244,c:'#ff5090'}];
+// Grouped effect list: dance autos + standalone effects (both make the module
+// independent of the grid) first, then "folgt Grid", then the raw grid modes.
+function optsHTML(){ let h='<optgroup label="Auto-Tanz">';
+  for(let i=0;i<AUTOS.length;i++)h+='<option value="'+(ABASE+i)+'">Auto: '+AUTOS[i]+'</option>';
+  h+='</optgroup><optgroup label="Standalone">';
+  for(let i=0;i<LOCALS.length;i++)h+='<option value="'+(LBASE+i)+'">'+LOCALS[i]+'</option>';
+  h+='</optgroup><option value="'+FOLLOW+'">folgt Grid</option><optgroup label="Grid-Modi">';
   for(let i=0;i<EFF.length;i++)h+='<option value="'+i+'">'+i+' '+EFF[i]+'</option>';
-  h+='<option value="'+FOLLOW+'">folgt Grid</option>'; return h; }
+  return h+'</optgroup>'; }
+// Name of whatever effectPin is actually on screen (grid mode / local / auto).
+const runName=e=>e>=ABASE?('Auto: '+(AUTOS[e-ABASE]||'?')):(e>=LBASE&&e<LBASE+LOCALS.length?(LOCALS[e-LBASE]||'?'):(EFF[e]||'?'));
+function selSw(r,h){ r.sws.querySelectorAll('.sw').forEach(sw=>sw.classList.toggle('sel',(+sw.dataset.h)===h)); }
 // ── Per-control confirm lock (fixes the two-phone glitch) ──────────────────
 // pend() marks a control the moment the user changes it; put() then refuses to
 // overwrite it until the module's own hello confirms the value (or ~4s pass),
@@ -397,10 +493,12 @@ function makeCard(mac){
   const c=document.createElement('div'); c.className='m';
   c.innerHTML=
     '<div class="row"><input class="nm" type="text" maxlength="15"> <span class="mac"></span>'+
-      ' <span class="pill st"></span> <span class="pill lk"></span>'+
+      ' <span class="pill st"></span> <span class="pill lk"></span> <span class="pill fw"></span>'+
       '<button class="idf" title="Streifen blinken lassen">&#128161; Finden</button></div>'+
     '<div class="meta"></div>'+
     '<div class="row"><label>Effekt</label><select class="ef">'+OPTS+'</select></div>'+
+    '<div class="row"><label>Farbe</label><span class="sws"></span>'+
+      '<span class="hint">nur eigenst&auml;ndig (nicht bei &bdquo;folgt Grid&ldquo;)</span></div>'+
     '<div class="row slave"><label>Slave</label>'+
       '<label><input type="checkbox" class="fm"> Grid-Modus</label>'+
       '<label><input type="checkbox" class="fs"> Strobe</label>'+
@@ -414,10 +512,18 @@ function makeCard(mac){
       '<span class="hint">1 = jede LED · N = jede N-te leuchtet, N-1 dunkel</span></div>'+
     '<div class="row"><label>Boden</label><select class="fl">'+
       '<option value="0">Aus</option><option value="1">Fluss &#9654;</option><option value="2">Fluss &#9664;</option>'+
-      '</select><span class="hint">Bodenstreifen: Taste 5 l&auml;sst ihn flie&szlig;en</span></div>';
+      '</select><span class="hint">Bodenstreifen: Taste 5 l&auml;sst ihn flie&szlig;en</span></div>'+
+    '<div class="row"><label>Akku</label><span class="bt"></span>'+
+      '<label style="min-width:auto"><input type="checkbox" class="bm" checked disabled> Unterspannungs-Schutz (immer an)</label></div>';
   const q=s=>c.querySelector(s);
-  const r={card:c,nm:q('.nm'),mac:q('.mac'),st:q('.st'),lk:q('.lk'),meta:q('.meta'),ef:q('.ef'),fm:q('.fm'),idf:q('.idf'),
-           fs:q('.fs'),fb:q('.fb'),fe:q('.fe'),fk:q('.fk'),gn:q('.gn'),gv:q('.gv'),ld:q('.ld'),gp:q('.gp'),fl:q('.fl'),follow:0,effNow:255};
+  const r={card:c,nm:q('.nm'),mac:q('.mac'),st:q('.st'),lk:q('.lk'),fw:q('.fw'),meta:q('.meta'),ef:q('.ef'),fm:q('.fm'),idf:q('.idf'),
+           fs:q('.fs'),fb:q('.fb'),fe:q('.fe'),fk:q('.fk'),gn:q('.gn'),gv:q('.gv'),ld:q('.ld'),gp:q('.gp'),fl:q('.fl'),bt:q('.bt'),bm:q('.bm'),
+           sws:q('.sws'),follow:0,effNow:255,_cp:null,_ct:0};
+  // Colour swatches: independent-mode tint. Built once; a click sends ?color= and
+  // holds its highlight (r._cp) until the module's hello echoes it back, or ~4s,
+  // so the 1.5s poll can't snap the selection back mid-change (same idea as put()).
+  r.sws.innerHTML=PAL.map(p=>'<span class="sw" data-h="'+p.h+'" title="'+p.n+'" style="background:'+p.c+'"></span>').join('');
+  r.sws.querySelectorAll('.sw').forEach(sw=>sw.onclick=()=>{ r._cp=+sw.dataset.h; r._ct=Date.now(); selSw(r,r._cp); set(mac,'color='+sw.dataset.h); });
   // Identify: momentary blink so you can find this strip. Not an effect change — sent raw, no pending.
   r.idf.onclick=()=>set(mac,'effect='+IDENT);
   const sendFollow=()=>{ let mk=(r.follow&F_MODE);
@@ -433,17 +539,27 @@ function makeCard(mac){
   r.ld.onchange=e=>{pend(e.target);set(mac,'leds='+e.target.value)};
   r.gp.onchange=e=>{pend(e.target);set(mac,'gap='+e.target.value)};
   r.fl.onchange=e=>{pend(e.target);set(mac,'floor='+e.target.value)};
+  // Unterspannungs-Schutz ist fest an — kein onchange (Checkbox nur zur Anzeige, disabled).
   return r;
 }
 async function tick(){
   let d; try{d=await(await fetch('/api/modules')).json()}catch(e){return}
-  if(!OPTS){ EFF=d.effects;FOLLOW=d.follow;OPTS=optsHTML(); }
+  if(!OPTS){ EFF=d.effects;LOCALS=d.locals;AUTOS=d.autos;LBASE=d.localBase;ABASE=d.autoBase;FOLLOW=d.follow;OPTS=optsHTML(); }
   document.getElementById('warn').innerHTML = d.chOk?'':
     '<div class="warn"><b>Kanal '+d.ch+' statt '+d.chWant+'.</b> Dieser Knoten h&auml;ngt am Router und'+
     ' funkt deshalb auf dessen Kanal &mdash; die Module senden auf '+d.chWant+' und sind hier'+
     ' unsichtbar. Router auf Kanal '+d.chWant+' stellen.</div>';
+  // Firmware spread among the modules we hear: >1 distinct build = some strip
+  // missed the last OTA. Most common build is "current"; odd ones get a red pill.
+  const on=d.mods.filter(m=>m.online), cnt={};
+  on.forEach(m=>cnt[m.fw]=(cnt[m.fw]||0)+1);
+  const builds=Object.keys(cnt); let common=null,best=-1;
+  for(const b in cnt) if(cnt[b]>best){best=cnt[b];common=b}
+  const mixed=builds.length>1;
   document.getElementById('bar').textContent =
-    'Kanal '+d.ch+' · Grid '+(d.gridSeen?('sichtbar, Modus '+d.gridMode):'nicht gesehen')+' · '+d.mods.length+' Module';
+    'Kanal '+d.ch+' · Grid '+(d.gridSeen?('sichtbar, Modus '+d.gridMode):'nicht gesehen')+' · '+d.mods.length+' Module'+
+    (mixed?' · ⚠ '+builds.length+' verschiedene Versionen!':(builds.length==1?' · alle Version '+fwtag(builds[0]):''));
+  put(autoIntEl,d.autoInt); put(sweepIntEl,d.sweepInt);   // grid's echoed interval values (put() protects an in-flight edit)
   const L=document.getElementById('list'); const seen={};
   if(!d.mods.length){ L.innerHTML='<div class="empty">Noch kein Modul geh&ouml;rt.'+
     (d.chOk?' Modul eingeschaltet? Es meldet sich einmal pro Sekunde.':'')+'</div>';
@@ -457,9 +573,15 @@ async function tick(){
     r.mac.textContent=m.mac;
     r.st.textContent=m.online?'online':('weg seit '+m.age+'s');
     r.lk.textContent=m.link?'Controller ok':'kein Controller';
-    r.meta.innerHTML=m.w+'&times;'+m.h+' · Pin '+m.pin+' · Gruppe '+m.grp+' · l&auml;uft: '+(EFF[m.effNow]||'?')+' · up '+m.up+'s';
+    r.fw.textContent='Version '+fwtag(m.fw);
+    r.fw.className='pill fw'+(m.online&&mixed&&(''+m.fw)!==common?' bad':'');   // red = not the common build
+    r.meta.innerHTML=m.w+'&times;'+m.h+' · Pin '+m.pin+' · Gruppe '+m.grp+' · l&auml;uft: '+runName(m.effNow)+' · up '+m.up+'s';
     put(r.nm,m.name);
     put(r.ef,m.eff);
+    // Colour swatch highlight, with the same pending-lock idea as put(): honour a
+    // recent click until the module confirms it (or ~4s), else show reported lhue.
+    if(r._cp!=null){ if(r._cp===m.lhue){r._cp=null} else if(Date.now()-r._ct>4000){r._cp=null} }
+    if(r._cp==null) selSw(r,m.lhue);
     r.effNow=m.effNow;                          // remembered so unchecking Grid-Modus can pin it
     put(r.fm,(m.eff==FOLLOW)?1:0);
     r.follow=m.follow;
@@ -469,6 +591,9 @@ async function tick(){
     put(r.ld,m.w*m.h);
     put(r.gp,m.gap);
     put(r.fl,m.floor);
+    // Spannung: always visible per module. battVolt is sampled every 10s on the module.
+    r.bt.innerHTML='<span class="pill">&#128267; '+(m.batt>0?m.batt.toFixed(2)+'&nbsp;V':'&ndash;')+(m.blow?' &#9888;':'')+'</span>';
+    // Schutz ist immer an → Checkbox bleibt gesetzt (disabled); Modul meldet stets enabled.
   });
   for(const id in rows) if(!seen[id]){ rows[id].card.remove(); delete rows[id]; }
 }
@@ -510,9 +635,14 @@ TrellisCallback handleKey(keyEvent evt){
   btnDown[b]=pressed; if(pressed) btnDownT[b]=millis();
   if(pressed){
     if(isParamBtn(b) && state==ST_ADJUST && activeBtn==b){ enterDefault(); suppressBtn=b; } // tap active param → off
+    // Strobe-speed key (phys 10): a plain TAP toggles its adjust mode (no 2s hold),
+    // so "button 10 activates strobe speed" is one press. The line above already
+    // handled the toggle-OFF (and set suppressBtn), so only enter here on a fresh tap.
+    if(b==9 && !(state==ST_ADJUST && activeBtn==9) && suppressBtn!=9) enterAdjust(9);
     if(b==11) sendCmd(TOGA_CMD_BEAT_TAP,0,0);      // send NOW: every ms of delay is phase error
     if(b==0){ autoMode=(uint8_t)(autoMode%TOGA_AUTO_COUNT+1); sendCmd(TOGA_CMD_HEARTBEAT,0,0); } // next mood, wraps 4→1
     if(b==10){ gBlackout=!gBlackout; sendCmd(0,0,0); }  // blackout latch: flip + notify now (don't wait for the 100ms heartbeat)
+    if(b==2){ gSweep=!gSweep; sendCmd(0,0,0); }          // speed-sweep latch (phys 4): flip + notify now
   } else if(b==suppressBtn) suppressBtn=-1;       // released → hold-to-activate allowed again
   if(b==15||b==14||b==13||b==6) sendCmd(0,0,0);  // strobe / mode-strobe / castle-strobe / spot edge → notify immediately
   return 0;
@@ -521,11 +651,27 @@ TrellisCallback handleKey(keyEvent evt){
 // true if the active param is at its limit in direction dir
 bool atLimit(int dir){
   switch(activeTarget){
-    case 0: return dir>0? gs.brightness>=128 : gs.brightness<=1;
-    case 1: return dir>0? gs.animSpeed>=4.0f : gs.animSpeed<=0.1f;
-    case 4: return dir>0? gs.hueSpeed>=HUE_SPEED_MAX : gs.hueSpeed<=0;
+    case TOGA_P_SPEED:      return dir>0? gs.animSpeed>=4.0f : gs.animSpeed<=0.1f;
+    case TOGA_P_HUESPEED:   return dir>0? gs.hueSpeed>=HUE_SPEED_MAX : gs.hueSpeed<=0;
+    case TOGA_P_STROBESPEED:return dir>0? gs.strobeSpeed>=STROBE_SPEED_MAX : gs.strobeSpeed<=STROBE_SPEED_MIN;
     default: return false;                       // COLOR / STROBEHUE wrap
   }
+}
+// Is whatever the +/- keys are adjusting RIGHT NOW pinned at its limit in
+// direction dir? Covers the three brightness edit-machines and the param adjust;
+// plain mode-switching and the colour params wrap, so they never report a limit.
+// Used only to blink the +/- key when a held press no longer changes anything.
+bool adjustAtLimit(int dir){
+  if(btnDown[15]||btnDown[14]||btnDown[13])                                      // strobe held → tuning global strobe speed
+    return dir>0? gs.strobeSpeed>=STROBE_SPEED_MAX : gs.strobeSpeed<=STROBE_SPEED_MIN;
+  switch(briMode){
+    case BRI_GLOBAL: return dir>0? gs.globalBrightness>=MAX_BRIGHTNESS : gs.globalBrightness<=BRI_STEP;  // floor = one step above off
+    case BRI_MODE:   return dir>0? gs.modeFactor>=BRICOEF_MAX          : gs.modeFactor<=BRICOEF_MIN;
+    case BRI_CTRL:   return dir>0? ctrlBri>=CTRL_BRI_MAX               : ctrlBri<=CTRL_BRI_MIN;
+    default: break;
+  }
+  if(state==ST_ADJUST) return atLimit(dir);
+  return false;
 }
 
 // HSV → trellis colour (h,s,v all 0..255).
@@ -551,6 +697,7 @@ uint32_t paramCol(int b,uint8_t v){
     case 4:  f=(gs.brightness-1)/127.0f; break;      // Helligkeit 1..128
     case 8:  f=(gs.animSpeed-0.1f)/3.9f; break;       // Speed 0.1..4.0
     case 5:  f=gs.hueSpeed/(float)HUE_SPEED_MAX; break;   // Hue-speed 0..HUE_SPEED_MAX
+    case 9:  f=gs.strobeSpeed/(float)STROBE_SPEED_MAX; break;  // Strobe-speed 0..MAX (cold→hot meter)
     case 1:  return rgbScale(gs.tintR,gs.tintG,gs.tintB,v);  // Color → exact grid tint
     case 12: return strobeCol(v);                            // Strobe-colour → actual strobe colour
     default: return C(v,v,v);
@@ -634,6 +781,11 @@ void renderLEDs(uint32_t t){
       else if(i==13)                col=C(0,140,160);   // castle-strobe held
       else if(i!=4 && !(state==ST_ADJUST && i==activeBtn)) col=C(70,20,0);
     }
+    // +/- at the end of the setting being adjusted: while the key is held and the
+    // value can no longer move, blink it so "you've hit the limit" is unmistakable.
+    // Overrides the press-feedback above; a held +/- that is NOT at a limit keeps it.
+    if(i==3 && btnDown[3] && adjustAtLimit(+1)) col = blink?C(0,110,140):C(0,0,0);
+    if(i==7 && btnDown[7] && adjustAtLimit(-1)) col = blink?C(0,110,140):C(0,0,0);
     // Everything except the Helligkeit key dims with the global brightness.
     if(i!=4) col=scaleCol(col,padScale);
     // Button 4 (Helligkeit) owns its own indicator, above the param/press logic, and
@@ -641,12 +793,15 @@ void renderLEDs(uint32_t t){
     // slow breathe = GLOBAL, fast breathe = MODE factor, solid white = CONTROLLER,
     // a steady medium white at rest.
     if(i==4){
-      if(briMode!=BRI_NONE) col=briBtnCol(t);
-      else col=C(70,70,70);                          // clearly visible at rest
+      if(briMode!=BRI_NONE) col=briBtnCol(t);        // while editing: full brightness so you can read the mode
+      else col=scaleCol(C(70,70,70),padScale);       // at rest: same brightness as the other keys (dimmed with the pad)
     }
     // Button 10 (Blackout): bright while active, a dim marker at rest so the key is
     // findable. Not dimmed by the global brightness — it must stay visible in the dark.
     if(i==10) col = gBlackout ? C(200,200,200) : C(25,25,25);
+    // Speed-sweep (logical 2 / phys 4): blinks while active, dimmed-down marker at
+    // rest so it is findable. Not dimmed by the global brightness, like blackout.
+    if(i==2)  col = gSweep ? (blink?C(70,44,0):C(0,0,0)) : C(18,12,0);   // dimmer active blink (was 190,120,0 — too bright)
     // While blacked out, kill every pad LED except the ones the operator still uses:
     // blackout(10), strobe(15), mode-strobe(14), castle-strobe(13) and auto(0).
     if(gBlackout && i!=0 && i!=10 && i!=13 && i!=14 && i!=15) col=C(0,0,0);
@@ -698,6 +853,7 @@ void setup(){
   server.on("/", handleRoot);
   server.on("/api/modules", handleModules);
   server.on("/api/set", handleSet);
+  server.on("/api/timing", handleTiming);
   server.onNotFound([](){ server.send(404,"text/plain","404"); });
   server.begin();
   Serial.println(F("http ready on :80  (http://192.168.4.1/)"));
@@ -785,22 +941,28 @@ void loop(){
 
   // ── +/- ──
   bool plus=btnDown[3], minus=btnDown[7];
-  if(btnDown[15]){                                  // strobe held → +/- tune the gap between flashes
-    if(plus && !prevPlus){ plusPressT=t; plusRepT=t; sendCmd(2,TOGA_P_STROBEGAP,+1); }
-    else if(plus){ if(t-plusPressT>=400 && t-plusRepT>=60){ plusRepT=t; sendCmd(2,TOGA_P_STROBEGAP,+1); } }
-    if(minus && !prevMinus){ minusPressT=t; minusRepT=t; sendCmd(2,TOGA_P_STROBEGAP,-1); }
-    else if(minus){ if(t-minusPressT>=400 && t-minusRepT>=60){ minusRepT=t; sendCmd(2,TOGA_P_STROBEGAP,-1); } }
+  if(btnDown[15]||btnDown[14]||btnDown[13]){        // any strobe held → +/- tune the ONE global strobe speed (+ = faster)
+    if(plus && !prevPlus){ plusPressT=t; plusRepT=t; sendCmd(2,TOGA_P_STROBESPEED,+1); }
+    else if(plus){ if(t-plusPressT>=400 && t-plusRepT>=60){ plusRepT=t; sendCmd(2,TOGA_P_STROBESPEED,+1); } }
+    if(minus && !prevMinus){ minusPressT=t; minusRepT=t; sendCmd(2,TOGA_P_STROBESPEED,-1); }
+    else if(minus){ if(t-minusPressT>=400 && t-minusRepT>=60){ minusRepT=t; sendCmd(2,TOGA_P_STROBESPEED,-1); } }
   } else if(briMode!=BRI_NONE){                     // brightness edit-mode → +/- adjust the selected brightness
     if(plus && !prevPlus){ plusPressT=t; plusRepT=t; briAdjust(+1); }
     else if(plus){ uint32_t h=t-plusPressT; if(h>=500){ uint32_t rate=h<2000?80:(h<4000?40:16); if(t-plusRepT>=rate){ plusRepT=t; briAdjust(+1); } } }
     if(minus && !prevMinus){ minusPressT=t; minusRepT=t; briAdjust(-1); }
     else if(minus){ uint32_t h=t-minusPressT; if(h>=500){ uint32_t rate=h<2000?80:(h<4000?40:16); if(t-minusRepT>=rate){ minusRepT=t; briAdjust(-1); } } }
   } else if(state==ST_DEFAULT){
-    // Taking the mode over by hand ends the automatic — clear it BEFORE the
-    // send, so the very packet that steps the mode also carries autoMode=0.
-    if((plus && !prevPlus)||(minus && !prevMinus)) autoMode=TOGA_AUTO_OFF;
-    if(plus  && !prevPlus)  sendCmd(1,0,+1);        // next mode
-    if(minus && !prevMinus) sendCmd(1,0,-1);        // prev mode
+    // In auto-mode the FIRST +/- press ONLY ends the automatic and keeps the mode
+    // that is showing — it does NOT step. autoMode rides every packet, so notifying
+    // once (sendCmd) propagates the off; the grid then persists the current mode.
+    // Once auto is off, +/- steps the mode as before.
+    bool edge = (plus && !prevPlus)||(minus && !prevMinus);
+    if(edge && autoMode!=TOGA_AUTO_OFF){
+      autoMode=TOGA_AUTO_OFF; sendCmd(0,0,0);        // end auto, hold current mode (no step)
+    } else {
+      if(plus  && !prevPlus)  sendCmd(1,0,+1);        // next mode
+      if(minus && !prevMinus) sendCmd(1,0,-1);        // prev mode
+    }
   } else if(state==ST_ADJUST){
     if(plus && !prevPlus){ plusPressT=t; plusRepT=t; sendCmd(2,activeTarget,+1); }
     else if(plus){ uint32_t h=t-plusPressT; if(h>=500){ uint32_t rate=h<2000?80:(h<4000?40:16); if(t-plusRepT>=rate){ plusRepT=t; sendCmd(2,activeTarget,+1); } } }

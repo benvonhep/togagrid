@@ -589,8 +589,8 @@ void anim_strangeAttractor(uint32_t t,float dt){
   for(int i=0;i<LOR_TRAIL;i++){
     int idx=(lorTIdx+i)%LOR_TRAIL;
     float age=(float)i/LOR_TRAIL; // 0=oldest, 1=newest
-    float rx=lorTX[idx]*1.1f;     // X position → X strip space (-51..51)
-    float ry=lorTY[idx]*1.1f;     // Y position → LED position
+    float rx=lorTX[idx]*1.8f;     // X position → X strip space (widened sweep)
+    float ry=lorTY[idx]*1.8f;     // Y position → LED position (widened sweep)
     // Apply the slow rotation drift in the projection plane
     float px=rx*cr-ry*sr;
     float py=rx*sr+ry*cr;

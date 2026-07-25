@@ -6,8 +6,8 @@
 //  Topology
 //    Controller ──broadcast TogaCmdMsg (100ms heartbeat + commands 3x)──► Grid + Modules
 //    Grid       ──broadcast TogaSyncMsg (200ms, absolute state)─────────► Controller + Modules
-//    Modules    ──broadcast TogaHelloMsg (1/s, "I exist")───────────────► Webserver
-//    Webserver  ──broadcast TogaModCfgMsg (on demand, addressed by MAC)─► one Module
+//    Modules    ──broadcast TogaHelloMsg (1/s, "I exist")───────────────► Controller
+//    Controller ──broadcast TogaModCfgMsg (on demand, addressed by MAC)─► one Module
 //
 //  The grid is the single source of truth. Commands are relative steps
 //  (+1/-1), so ONLY the grid applies them; modules mirror the grid's
@@ -89,7 +89,16 @@
 //     -> floorFlow (49). Changing a reserved byte's MEANING is the "understood, not
 //     rejected" hazard (an un-updated node read them as 0), so it needs the bump
 //     even though the sizes are unchanged. Reflash every node.
-#define TOGA_VERSION  8
+// v9: TogaSyncMsg grew a `coverage` byte (grid's live lit-LED fraction) so FOLLOW
+//     modules can match their own lit ratio to the grid's. A wire-layout change →
+//     every node must run v9 or it won't be heard. Reflash the whole fleet.
+// v10: standalone/independent module control. TogaModCfgMsg grew localHue (38->40)
+//     and TogaHelloMsg grew localHue (52->56) — the colour a module wears when it
+//     is NOT following the grid. Plus two new effectPin sentinel RANGES (local
+//     effects + dance autos, see below) — those are values, not struct shape, so
+//     they cost nothing on their own; the localHue byte is the wire-layout change
+//     that forces the bump. Reflash the whole fleet.
+#define TOGA_VERSION  10
 
 // The channel the bus runs on AND the channel the controller's AP is pinned to.
 // Those being the same number is the whole architecture: it is what lets a node
@@ -106,7 +115,7 @@
 #define TOGA_MSG_CMD    1       // controller -> broadcast
 #define TOGA_MSG_SYNC   2       // grid -> broadcast (grid is the only sync source)
 #define TOGA_MSG_HELLO  3       // module -> broadcast (1/s): "I exist, here is my config"
-#define TOGA_MSG_MODCFG 4       // webserver -> broadcast: settings for ONE module, by MAC
+#define TOGA_MSG_MODCFG 4       // controller (module UI) -> broadcast: settings for ONE module, by MAC
 // 5 was TOGA_MSG_OTA, back when OTA meant taking a node out of the show. The AP
 // is on TOGA_CHANNEL now, so every node is permanently flashable without
 // leaving the bus and nobody has to be asked. Don't reuse the id.
@@ -115,10 +124,44 @@
 // A module in FOLLOW mode renders one dedicated 1D mode per grid mode, so the
 // count is the grid's mode count. The names below are the grid animation names
 // at each index (labels only — a module's render is a citation, not a copy).
-#define TOGA_EFFECT_COUNT  90
+#define TOGA_EFFECT_COUNT  72   // == grid TOTAL_ANIMS / module MOD_MODE_COUNT (0..71)
 #define TOGA_EFFECT_OFF    200  // pinned blackout (replaces the old effect id 8 "off")
 #define TOGA_EFFECT_FOLLOW 255  // not a pinned effect: derive it from the grid's mode
 #define TOGA_CFG_KEEP      254  // TogaModCfgMsg: leave this field as it is
+
+// ── Standalone / independent-module effects (v10) ───────────────────────────
+// When a module is NOT following the grid (effectPin != TOGA_EFFECT_FOLLOW) it is
+// "independent" and renders a self-contained look that reads well on a single
+// strip: a fixed colour (localHue below) that pulsates and fades, or one of a few
+// rainbow modes. These are DEDICATED effects, not the 68 grid citations — simple
+// and good-looking on their own. Two sentinel ranges live in effectPin, above the
+// 0..89 grid-mode ids and clear of OFF/FOLLOW/KEEP/IDENTIFY:
+//   · TOGA_EFFECT_LOCAL_BASE + k  → local effect k (0..TOGA_LOCAL_COUNT-1)
+//   · TOGA_EFFECT_AUTO_BASE  + k  → dance auto-program k (0..TOGA_LOCAL_AUTO_COUNT-1),
+//                                   which cycles a curated set of local effects.
+// Names live here (not just in the two web UIs) so the controller page and the
+// module fallback page cannot drift from each other or from the firmware. An
+// un-updated module fails applyModCfg's range test and ignores these, graceful.
+#define TOGA_EFFECT_LOCAL_BASE   100
+#define TOGA_LOCAL_COUNT          12
+#define TOGA_EFFECT_AUTO_BASE    120
+#define TOGA_LOCAL_AUTO_COUNT      3
+static inline bool togaIsLocalEffect(uint8_t e){ return e >= TOGA_EFFECT_LOCAL_BASE && e < TOGA_EFFECT_LOCAL_BASE + TOGA_LOCAL_COUNT; }
+static inline bool togaIsAutoEffect (uint8_t e){ return e >= TOGA_EFFECT_AUTO_BASE  && e < TOGA_EFFECT_AUTO_BASE  + TOGA_LOCAL_AUTO_COUNT; }
+// A module renders LOCAL_MODES[k] (module_effects.h) for local effect k; the order
+// of these labels MUST match that table row-for-row.
+static inline const char* togaLocalEffectName(uint8_t k){
+  static const char* const N[TOGA_LOCAL_COUNT] = {
+    "Solid","Atmen","Puls","Komet","Funkeln","Feuer",
+    "Regenbogen","Regenbogen-Fluss","Regenbogen-Plasma","Regenbogen-Funkeln",
+    "Fließen","Lauflicht"
+  };
+  return k < TOGA_LOCAL_COUNT ? N[k] : "?";
+}
+static inline const char* togaAutoProgName(uint8_t k){
+  static const char* const N[TOGA_LOCAL_AUTO_COUNT] = { "Mix", "Farbe", "Regenbogen" };
+  return k < TOGA_LOCAL_AUTO_COUNT ? N[k] : "?";
+}
 // A momentary action, not a stored effect: TogaModCfgMsg.effectPin == this makes the
 // addressed module blink bright white for a few seconds so you can find its strip.
 // It is NOT saved and does NOT change the module's real effect. An un-updated module
@@ -127,25 +170,22 @@
 #define TOGA_EFFECT_IDENTIFY 201
 
 // PROGMEM-friendly on ESP32 (flash is memory-mapped; the table lives in .rodata,
-// not RAM). Index 39 is plasmaLightning — the grid's anim_agentField is an alias
-// for it.
+// not RAM). These MUST match grid.ino's anim switch (case k → anim_*) 1:1, index
+// for index — that is the contract a FOLLOW-mode module renders against. Keep in
+// sync with grid_config.h TOTAL_ANIMS and module_effects.h MODE_TABLE (== 72).
 static inline const char* togaEffectName(uint8_t e){
   static const char* const N[TOGA_EFFECT_COUNT] = {
-    "setupGrid","heartbeat","binaryRain","tectonic","vortex","earthquake","dnaHelix",
-    "supernova","blackHole","wormhole","mitosis","collider","shockwaveChain","pulsar",
-    "liquidMetal","iceCrown","coriolisStorm","crystalFracture","aurora","lavaLamp",
-    "nerveSystem","gravityLens","tidalWave","cymatics","starfieldWarp","darkMatter",
-    "concentricSq","squareRain","diamondPulse","checkerboard","rotatingCube",
-    "sunsetHorizon","depthMap","cosmicDust","heartglow","evolution","morph",
-    "strangeAttract","harmonicReson","plasmaLightning","tetris","snake","iconShow",
-    "bouncingLogo","starTunnel3D","rippleRain","spiralGalaxy","plasmaField",
-    "breatheGradient","boids","fireworks","reactionDiff","textTOGA","textCASTLE",
-    "text2026","stickman","paddleBall","smiley","eye","starfield2","warp","asteroids",
-    "shootingStars","blackHole2","pulsar2","pulsarNebula","orionNebula","horsehead",
-    "twinStars","planets","earthWindow","shipPanel","radar","sineWaves","rocketFire",
-    "warningLight","aliens","spaceInvaders","rain2","levitate","confetti","spiralEject",
-    "clouds3d","pulseHeart","rainUp","starsFlying","firework2","hStripesFlow",
-    "vuColumns","vuGrid"
+    "setupGrid","heartbeat","binaryRain","vortex","earthquake","supernova","blackHole",
+    "wormhole","mitosis","collider","shockwaveChain","pulsar","liquidMetal","coriolisStorm",
+    "aurora","lavaLamp","nerveSystem","gravityLens","cymatics","starfieldWarp",
+    "concentricSquares","squareRain","depthMap","cosmicDust","heartglow","evolution","morph",
+    "strangeAttractor","harmonicResonance","snake","tetris","bouncingLogo","starTunnel3D",
+    "rippleRain","spiralGalaxy","boids","fireworks","textTOGA","stickman","paddleBall",
+    "smiley","eye","starfield2","warp","shootingStars","blackHole2","pulsar2","horsehead",
+    "auroraCurtains","radar","sineWaves","rocketFire","warningLight","aliens","rain2","levitate",
+    "confetti","spiralEject","clouds3d","pulseHeart","rainUp","starsFlying","firework2",
+    "vuColumns","vuGrid","superHexagon","squareImplode","plasmaLightning",
+    "neonShockwaves","emberVortex","prismShards","nebulaBreath"
   };
   if(e < TOGA_EFFECT_COUNT)    return N[e];
   if(e == TOGA_EFFECT_OFF)     return "aus";
@@ -166,8 +206,11 @@ static inline const char* togaEffectName(uint8_t e){
 #define TOGA_P_COLOR      2
 #define TOGA_P_STROBEHUE  3
 #define TOGA_P_HUESPEED   4
-#define TOGA_P_STROBEGAP  5
+#define TOGA_P_STROBEGAP  5   // (legacy) button-15 gap; superseded by TOGA_P_STROBESPEED
 #define TOGA_P_BRICOEF    6   // per-mode brightness factor (0..1), independent of the global master
+#define TOGA_P_STROBESPEED 7  // ONE global strobe speed shared by strobe(15)/mode(14)/castle(13)
+#define TOGA_P_AUTOINT    8   // auto-mode dwell per mode, ABSOLUTE seconds (arg, not a step) — set from the web UI
+#define TOGA_P_SWEEPINT   9   // speed-sweep min→max→min period, ABSOLUTE seconds (arg, not a step) — set from the web UI
 
 // ── Momentary flags (TogaCmdMsg.flags), sent on EVERY packet incl. heartbeat ──
 #define TOGA_F_STROBE        0x01   // button 15
@@ -182,6 +225,7 @@ static inline const char* togaEffectName(uint8_t e){
 #define TOGA_F_BLACKOUT      0x08   // free key (phys 6 / logical 10)
 #define TOGA_F_SPOT          0x10   // phys key 5: momentary moving-spot override on modules
                                     // (grid ignores 0x10; old modules mask it off, graceful)
+#define TOGA_F_SWEEP         0x20   // LATCH (phys key 4 / logical 2): speed-sweep on the grid — see below
 
 // ── Auto mood (TogaCmdMsg.autoMode), also on EVERY packet ──
 // 0 = off, 1..TOGA_AUTO_COUNT = the mood the grid should cycle through.
@@ -216,14 +260,16 @@ static const uint8_t TOGA_BCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 //  mismatch would not show up as a constant offset but would compound
 //  over a night of use.
 // ══════════════════════════════════════════════════════════════════════
-#define MAX_BRIGHTNESS   128   // hard cap (~50% — white/yellow stays safe)
+#define MAX_BRIGHTNESS   255   // full brightness (was 128 / ~50%). NOTE: full white now
+                               // draws ~2x the current of the old cap — the PSU, wiring
+                               // and fuses must be rated for the whole wall at full white.
 #define BRI_DEFAULT       40   // global master default (raw, 1..MAX_BRIGHTNESS)
 #define BRI_STEP           5   // +/- step when adjusting the global brightness
 
 // ── Per-mode brightness factor (0..1 stored as 0..255 fixed-point) ──
-// effective = globalBri * modeFactor/255, clamped to 1..MAX_BRIGHTNESS.
+// effective = globalBri * modeFactor/255, clamped to 0..MAX_BRIGHTNESS (0 = off).
 #define BRICOEF_MAX      255   // 1.0 — mode at full global brightness
-#define BRICOEF_MIN       26   // ~0.1 floor so a mode never blacks out entirely
+#define BRICOEF_MIN        0   // 0.0 — a mode's factor can go fully off (min = komplett aus)
 #define BRICOEF_STEP      13   // +/- step (~5%)
 
 // ── Controller pad brightness factor (its own dimming, 0..255) ──
@@ -331,7 +377,81 @@ static inline bool togaSquareOn(uint32_t t, uint32_t start, uint16_t onMs, uint1
 #define STROBE_GAP_MAX   250
 #define STROBE_GAP_STEP    5
 
+// ── Global strobe SPEED (v11) ───────────────────────────────────────────────
+// One speed for all three strobes: button-15 flash, mode-strobe (14) and
+// castle-strobe (13) share the SAME on/off rhythm, tuned from the controller's
+// strobe-speed key (phys 10) or by holding a strobe + pressing +/-. The index is
+// 0..MAX, higher = faster (shorter period). It maps to a period, then to an
+// on/off pair with a FIXED, typical stroboscope ratio of on:off = 1:2 (a brief
+// flash with twice as much darkness — reads clearly as a strobe, not a blink).
+#define STROBE_SPEED_MIN   0
+#define STROBE_SPEED_MAX  20
+#define STROBE_SPEED_DEF  10
+#define STROBE_SPEED_STEP  1
+#define STROBE_PER_SLOW  300   // ms period at speed 0    → ~3.3 Hz
+#define STROBE_PER_FAST   45   // ms period at speed MAX  → ~22 Hz
+// Fill *onMs/*offMs for a speed index. on = period/3 (1:2 duty), floored at
+// STROBE_FLASH_MS so the flash never falls under one LED refresh. Shared by the
+// grid (writes cfg + sync) so every node flashes on the exact same rhythm.
+static inline void togaStrobeTiming(uint8_t speed, uint8_t* onMs, uint8_t* offMs){
+  if(speed > STROBE_SPEED_MAX) speed = STROBE_SPEED_MAX;
+  uint16_t period = (uint16_t)(STROBE_PER_SLOW
+                  - (uint32_t)(STROBE_PER_SLOW - STROBE_PER_FAST) * speed / STROBE_SPEED_MAX);
+  uint16_t on = period / 3;
+  if(on < STROBE_FLASH_MS) on = STROBE_FLASH_MS;
+  *onMs  = (uint8_t)on;
+  *offMs = (uint8_t)(period - on);
+}
+
+// ── Speed sweep (controller phys-4 / logical-2 key, TOGA_F_SWEEP) ─────────────
+// A latched toggle. While on, the animation speed rides a continuous absolute-time
+// triangle min→max→min, so a mode change just picks the sweep up where it is (the
+// clock is global, never reset per mode). The period is the user-set sweep interval
+// (TOGA_P_SWEEPINT), the same in auto and free-run. The grid drives it and syncs the
+// swept speed, so the modules sweep in lockstep.
+#define SWEEP_SPEED_MIN   0.1f
+#define SWEEP_SPEED_MAX   4.0f
+// ── Configurable timing intervals (web UI, seconds) ──
+// Auto-mode dwell per mode and the sweep period are set from the controller's web
+// page and live on the grid (TOGA_P_AUTOINT / TOGA_P_SWEEPINT, absolute seconds).
+#define AUTO_INT_DEF      60        // s — default auto-mode dwell per mode
+#define SWEEP_INT_DEF    120        // s — default sweep min→max→min period
+#define TIMING_INT_MIN     5        // s — floor for both
+#define TIMING_INT_MAX   600        // s — ceiling for both (10 min)
+static inline float togaSweepSpeed(uint32_t t, uint32_t periodMs){
+  if(periodMs == 0) return SWEEP_SPEED_MIN;
+  float ph  = (float)(t % periodMs) / (float)periodMs;    // 0..1 over the period
+  float tri = ph < 0.5f ? ph * 2.0f : (1.0f - ph) * 2.0f; // 0→1→0 triangle
+  return SWEEP_SPEED_MIN + tri * (SWEEP_SPEED_MAX - SWEEP_SPEED_MIN);
+}
+
 #define HEARTBEAT_TIMEOUT 400  // ms; sender considered gone after this
+
+// ── Firmware build fingerprint ─────────────────────────────────────────
+// A 16-bit hash of THIS translation unit's compile date+time. It answers the
+// one question TOGA_VERSION cannot: "did every module actually get flashed with
+// the SAME firmware?" TOGA_VERSION is identical across the fleet by necessity —
+// a node on a different one is not even heard — so it can never show a straggler.
+// TOGA_FW_BUILD differs on every rebuild, so two modules reporting the same value
+// ran the same binary and a stale one stands out at a glance on the web UI.
+//
+// Each node computes its OWN id from its OWN __DATE__/__TIME__ (the macro expands
+// at the call site, so it captures the .ino's build, not this header's) — it is
+// NOT a shared constant. Reported in TogaHelloMsg.fwBuild; the web UI shows it.
+//
+// This is why repurposing TogaHelloMsg's two reserved bytes for it needs NO
+// TOGA_VERSION bump, unlike every earlier reserved-byte change: those were fields
+// a node ACTS on, so an un-updated node misreading them was the "understood, not
+// rejected" hazard. fwBuild is pure telemetry — nobody ever acts on it — so an
+// old module (sending reserved2 = 0) simply shows as build "0000", which during a
+// rollout is exactly what you want to see: the un-flashed strips, still listed.
+#define TOGA_FW_BUILD  (togaFwBuild(__DATE__, __TIME__))
+static inline uint16_t togaFwBuild(const char* d, const char* t){
+  uint32_t h = 2166136261u;                     // FNV-1a over "Mmm dd yyyy"+"hh:mm:ss"
+  for(const char* p = d; *p; p++){ h ^= (uint8_t)*p; h *= 16777619u; }
+  for(const char* p = t; *p; p++){ h ^= (uint8_t)*p; h *= 16777619u; }
+  return (uint16_t)((h >> 16) ^ (h & 0xFFFF));  // fold to 16 bits
+}
 
 // ══════════════════════════════════════════════════════════════════════
 //  Wire structs.
@@ -385,11 +505,21 @@ struct TogaSyncMsg {
   uint8_t  globalBrightness;    // 29  the master 1..MAX_BRIGHTNESS (controller scales its pad by this)
   uint8_t  strobeOnMs;          // 30  mode/castle-strobe ON  ms — modules mirror it (v6)
   uint8_t  strobeOffMs;         // 31  mode/castle-strobe OFF ms — modules mirror it (v6)
+  uint8_t  coverage;            // 32  grid's live lit-LED fraction 0..255 (v9) — a FOLLOW
+                                //     module trims its own lit fraction to match this ratio
+  uint8_t  modeFactor;          // 33  current mode's brightness factor BRICOEF_MIN..MAX — the
+                                //     controller uses it to blink +/- when the MODE factor is maxed
+  uint8_t  strobeSpeed;         // 34  global strobe speed index 0..STROBE_SPEED_MAX — controller meter/at-limit
+  uint8_t  rsvd9[1];            // 35  pad to the 4-byte alignment; reserved for future fields
+  uint16_t autoDwellS;          // 36  auto-mode dwell per mode, seconds — set from the web UI, echoed for display
+  uint16_t sweepPeriodS;        // 38  speed-sweep min→max→min period, seconds — set from the web UI, echoed for display
 };
-static_assert(sizeof(TogaSyncMsg) == 32,              "TogaSyncMsg layout drifted");
+static_assert(sizeof(TogaSyncMsg) == 40,              "TogaSyncMsg layout drifted");
 static_assert(offsetof(TogaSyncMsg, animSpeed) == 8,  "TogaSyncMsg layout drifted");
 static_assert(offsetof(TogaSyncMsg, beatMs) == 20,    "TogaSyncMsg layout drifted");
 static_assert(offsetof(TogaSyncMsg, strobeOnMs) == 30,"TogaSyncMsg layout drifted");
+static_assert(offsetof(TogaSyncMsg, coverage) == 32,  "TogaSyncMsg layout drifted");
+static_assert(offsetof(TogaSyncMsg, autoDwellS) == 36,"TogaSyncMsg layout drifted");
 // A module announcing itself, ~1/s. This is the ONE thing a module transmits,
 // and it is deliberately not an exception to "modules never apply steps": it
 // reports, it never commands. Nothing depends on it — miss every hello and the
@@ -412,15 +542,19 @@ struct TogaHelloMsg {
   char     name[16];            // 32  user label, NUL-terminated, "" = never named (v5)
   uint8_t  gap;                 // 48  output gap: 1 = every LED, N = light every Nth (v7)
   uint8_t  floorFlow;           // 49  TOGA_FLOOR_* — floor-strip flow role/direction (v8)
-  uint8_t  reserved2[2];        // 50  must be 0 (keeps the 4-byte alignment)
+  uint16_t fwBuild;             // 50  TOGA_FW_BUILD — firmware fingerprint (telemetry; no version bump)
+  uint8_t  localHue;            // 52  colour worn when independent (0 = native, else hue) (v10)
+  uint8_t  rsvd10[3];           // 53  pad to 4-byte alignment; reserved for future fields
 };
-static_assert(sizeof(TogaHelloMsg) == 52,           "TogaHelloMsg layout drifted");
+static_assert(sizeof(TogaHelloMsg) == 56,           "TogaHelloMsg layout drifted");
 static_assert(offsetof(TogaHelloMsg, mac) == 8,     "TogaHelloMsg layout drifted");
 static_assert(offsetof(TogaHelloMsg, width) == 20,  "TogaHelloMsg layout drifted");
 static_assert(offsetof(TogaHelloMsg, battMv) == 28, "TogaHelloMsg layout drifted");
 static_assert(offsetof(TogaHelloMsg, name) == 32,   "TogaHelloMsg layout drifted");
 static_assert(offsetof(TogaHelloMsg, gap) == 48,    "TogaHelloMsg layout drifted");
 static_assert(offsetof(TogaHelloMsg, floorFlow) == 49, "TogaHelloMsg layout drifted");
+static_assert(offsetof(TogaHelloMsg, fwBuild) == 50,   "TogaHelloMsg layout drifted");
+static_assert(offsetof(TogaHelloMsg, localHue) == 52,  "TogaHelloMsg layout drifted");
 
 // ── Battery flags (TogaHelloMsg.battFlags) ──
 #define TOGA_BATT_F_ENABLED 0x01
@@ -477,13 +611,23 @@ struct TogaModCfgMsg {
   char     name[16];            // 20  name[0]=='\0' = keep; else rename, NUL-terminated (v5)
   uint8_t  gap;                 // 36  0 = keep; 1 = every LED; N = light every Nth, blank N-1 (v7)
   uint8_t  floorFlow;           // 37  TOGA_FLOOR_* (0/1/2), or TOGA_FLOOR_KEEP = leave (v8)
+  uint8_t  localHue;            // 38  independent-mode colour: 0=native, 1..253/255=hue, KEEP=leave (v10)
+  uint8_t  rsvd10;              // 39  must be 0 (keeps the 4-byte alignment)
 };
-static_assert(sizeof(TogaModCfgMsg) == 38,           "TogaModCfgMsg layout drifted");
+static_assert(sizeof(TogaModCfgMsg) == 40,           "TogaModCfgMsg layout drifted");
 static_assert(offsetof(TogaModCfgMsg, mac) == 8,     "TogaModCfgMsg layout drifted");
 static_assert(offsetof(TogaModCfgMsg, ledCount) == 18,"TogaModCfgMsg layout drifted");
 static_assert(offsetof(TogaModCfgMsg, name) == 20,   "TogaModCfgMsg layout drifted");
 static_assert(offsetof(TogaModCfgMsg, gap) == 36,    "TogaModCfgMsg layout drifted");
 static_assert(offsetof(TogaModCfgMsg, floorFlow) == 37, "TogaModCfgMsg layout drifted");
+static_assert(offsetof(TogaModCfgMsg, localHue) == 38,  "TogaModCfgMsg layout drifted");
+
+// TogaModCfgMsg.localHue sentinel: like the other config fields, a value meaning
+// "leave the module's current colour alone". 0..253 and 255 are real hues (0 =
+// native / no tint); 254 is the one hue given up to carry "keep" — the web UIs
+// never emit it, so every ModCfg that changes some OTHER field can pass it and
+// not stamp a colour the user didn't touch.
+#define TOGA_LOCALHUE_KEEP  254
 
 static_assert(sizeof(TogaCmdMsg)   <= ESP_NOW_MAX_DATA_LEN, "cmd too big");
 static_assert(sizeof(TogaSyncMsg)  <= ESP_NOW_MAX_DATA_LEN, "sync too big");
@@ -562,7 +706,7 @@ static inline void togaApBegin(){
   WiFi.setSleep(false);                       // an AP that sleeps drops the bus
   // The channel argument is the load-bearing one: it pins the radio to
   // TOGA_CHANNEL, which is what lets the whole fleet stay on the bus while
-  // associated. max_connection 8: grid + webserver + N modules + a laptop.
+  // associated. max_connection 8: grid + N modules + a laptop.
   WiFi.softAP(TOGA_AP_SSID, TOGA_AP_PASS, TOGA_CHANNEL, 0 /*not hidden*/, 8);
 }
 

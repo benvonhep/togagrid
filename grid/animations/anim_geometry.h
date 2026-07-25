@@ -57,7 +57,7 @@ void drawSquareCorners(int r1,int c1,int r2,int c2,CRGB col){
 // setting. Colour still answers the Color knob: showGrid() rotates every hue.
 void anim_spotTunnel(uint32_t t) {
   float tf    = t*0.001f;
-  float period= 1.5f;                        // seconds per expansion (matches the floor-spot period)
+  float period= 0.9f;                        // seconds per expansion (kept in step with the module spot, MOD_SPOT_PERIOD)
   float phase = fmodf(tf/period, 1.0f);      // 0..1: one square, centre → rim
   FastLED.clear();
   for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}

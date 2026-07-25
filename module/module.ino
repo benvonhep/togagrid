@@ -54,6 +54,8 @@ struct ModEntry {
   uint8_t  battFlags;
   uint8_t  gap;            // output gap: 1 = every LED, N = light every Nth
   uint8_t  floor;          // floor-strip flow: 0 off, 1 fwd, 2 rev
+  uint16_t fwBuild;        // firmware fingerprint (TOGA_FW_BUILD) — spot a stale module
+  uint8_t  localHue;       // independent-mode colour (0 = native) (v10)
   uint32_t lastSeen;
 };
 ModEntry mods[MAX_MODULES];
@@ -68,6 +70,7 @@ volatile uint8_t hqHead = 0, hqTail = 0;
 enum NetMode { NET_CONNECTING, NET_CONTROLLER, NET_FALLBACK };
 NetMode  gNetMode = NET_CONNECTING;
 uint32_t gBootMs  = 0;
+uint32_t gFallbackFlashUntil = 0;            // blink the blue LED until here after falling back to toga-mod.local
 char     gHotSsid[33] = TOGA_HOTSPOT_SSID;   // NVS overrides in loadConfig()
 char     gHotPass[65] = TOGA_HOTSPOT_PASS;
 bool     gIsHost   = false;                  // do we own toga-mod.local? (fallback election)
@@ -85,6 +88,11 @@ uint8_t  gGroup  = MODULE_GROUP_DEFAULT;  // which broadcasts we act on
 // Shared with the web UI, which sends this same value — see toga_proto.h.
 #define EFFECT_FOLLOW TOGA_EFFECT_FOLLOW
 uint8_t  gEffectPin = EFFECT_FOLLOW;
+// Colour a module wears while INDEPENDENT (gEffectPin != FOLLOW): 0 = native hues
+// (no tint), 1..255 = the hue the local effects are painted in. Ignored while the
+// module follows the grid — then the grid's tint applies as before. Persisted in
+// NVS, set from the web UI or serial `color`. See the render path in loop(). (v10)
+uint8_t  gLocalHue = 0;
 uint8_t  gGain   = 100;                   // per-module brightness trim, %
 // Staged geometry: only takes effect on reboot, because the FastLED
 // controller is bound to a pin and length at addLeds() time.
@@ -97,10 +105,10 @@ uint8_t  gFollowMask = TOGA_FOLLOW_ALL;
 // every LED (feature off, default). Set from the web UI or serial `gap`. See
 // applyGap() in showModule() and TOGA_GAP_* in toga_proto.h.
 uint8_t  gGap    = TOGA_GAP_OFF;
-// Floor-strip flow (v8): TOGA_FLOOR_OFF/FWD/REV. When not OFF, this module reacts to
-// the controller's spot key (button 5) by scrolling its current render one pass along
-// the strip in the FWD/REV direction; non-floor modules ignore button 5. See the flow
-// block in loop() and gFlowShift in showModule().
+// Floor direction (v8): TOGA_FLOOR_OFF/FWD/REV. Sets the travel direction of the
+// button-5 moving spot and of the directional standalone effects (Fließen/Lauflicht/
+// Komet/Rb-Fluss). OFF behaves like FWD for the spot. See the spot block in loop(),
+// renderSpots() and localIsDirectional()/modMirrorX() in module_effects.h.
 uint8_t  gFloorFlow = TOGA_FLOOR_OFF;
 char     gName[16] = {0};                 // user label; default mod-<mac3> set in setup()
 uint32_t gRebootAt = 0;                   // non-zero → ESP.restart() once past it (LED-count change)
@@ -134,6 +142,9 @@ uint8_t  gStrobeGap  = STROBE_GAP_DEF;
 // own constants until the first sync arrives — matches the grid's default.
 uint8_t  gStrobeOnMs  = MODE_ON_MS;
 uint8_t  gStrobeOffMs = MODE_OFF_MS;
+// Grid's live lit-LED fraction (v9). Default full so we render normally until the
+// first sync lands; in FOLLOW mode we trim our own lit fraction down to this ratio.
+uint8_t  gCoverage    = 255;
 float    gBeatPeriod = 0.0f, gBeatPhase = 0.0f, gBeatGlow = 1.0f;
 CRGB     gSingleColor = CRGB(255, 160, 60);
 int16_t  gAnimIndex  = 0;      // the grid's current mode; drives our effect
@@ -178,10 +189,25 @@ static inline CRGB& ledXY(int x, int y) {
 // A module can also be PINNED to a fixed mode (0..89), or to TOGA_EFFECT_OFF
 // (blackout — the successor to the old effect id 8).
 static inline uint8_t activeEffect() {
-  if (gEffectPin < 90)               return gEffectPin;              // pinned mode
-  if (gEffectPin == TOGA_EFFECT_OFF) return TOGA_EFFECT_OFF;         // pinned blackout
-  return (gAnimIndex >= 0 && gAnimIndex < 90) ? (uint8_t)gAnimIndex  // FOLLOW: 1:1
-                                              : 0;                   // defensive
+  // FOLLOW: derive the mode from the grid's absolute animIndex (1:1). Anything
+  // else is a pin the module holds on its own — a grid mode (<90), OFF, a local
+  // standalone effect (TOGA_EFFECT_LOCAL_BASE+k) or a dance auto (…AUTO_BASE+k);
+  // all pass straight through to modRenderAny(), which routes each range.
+  if (gEffectPin == EFFECT_FOLLOW)
+    return (gAnimIndex >= 0 && gAnimIndex < 90) ? (uint8_t)gAnimIndex : 0;
+  return gEffectPin;
+}
+
+// Independent = not following the grid's mode. Then the module runs a pinned/local
+// effect and wears its own local colour instead of the grid's tint. (v10)
+static inline bool moduleIndependent() { return gEffectPin != EFFECT_FOLLOW; }
+
+// Is this a valid effectPin the module can hold? Shared by loadConfig/applyModCfg/
+// serial so the accepted set stays in one place: grid mode, OFF, FOLLOW, a local
+// standalone effect, or a dance auto-program.
+static inline bool validEffectPin(uint8_t e) {
+  return e < 90 || e == TOGA_EFFECT_OFF || e == TOGA_EFFECT_FOLLOW
+      || togaIsLocalEffect(e) || togaIsAutoEffect(e);
 }
 
 // ── ESP-NOW inbound state ──
@@ -194,6 +220,7 @@ volatile bool     syncPending = false;
 volatile TogaModCfgMsg cfgBuf;                // settings addressed at us, from the web UI
 volatile bool     cfgPending = false;
 static uint8_t    gMyMac[6] = {};             // filled in setup(); the UI addresses us by it
+static uint16_t   gFwBuild = 0;               // this build's fingerprint (TOGA_FW_BUILD); reported in the hello
 
 // Runs in the WiFi task: stay short, no Serial, no allocation.
 // There is no command queue — the module applies no steps, so the only thing
@@ -252,6 +279,7 @@ void applySync(const TogaSyncMsg& s) {
   gBeatPhase  = s.beatPhase / 255.0f;   // keeps our pulse in phase with the grid
   gSingleColor = CRGB(s.tintR, s.tintG, s.tintB);
   gAnimIndex  = s.animIndex;            // mode follows the grid; see activeEffect()
+  gCoverage   = s.coverage;             // grid's live lit-LED fraction (v9) → modCoverGate()
 }
 
 // ── NVS ──
@@ -264,8 +292,9 @@ void loadConfig() {
   cfgH    = prefs.getUShort("h",   8);
   cfgPin  = prefs.getUChar("pin",  4);
   gEffectPin = prefs.getUChar("eff", EFFECT_FOLLOW);
+  gLocalHue  = prefs.getUChar("lhue", 0);                     // independent-mode colour (v10)
   gGain   = prefs.getUChar("gain", 100);
-  battMonEn = prefs.getUChar("bmon", 0) ? 1 : 0;   // default OFF (bench-safe)
+  // Undervoltage lockout is hardwired ON (see module_battery.h) — no NVS key, no toggle.
   gFollowMask = prefs.getUChar("follow", TOGA_FOLLOW_ALL);   // default: follow everything (v5)
   gGap    = prefs.getUChar("gap", TOGA_GAP_OFF);             // sparse-strip spacing (v7); 1 = every LED
   gFloorFlow = prefs.getUChar("floor", TOGA_FLOOR_OFF);      // floor-strip flow (v8); 0 = not a floor strip
@@ -287,8 +316,7 @@ void loadConfig() {
   // sentinel, so a module previously pinned to blackout stays black after this
   // OTA instead of rendering mode 8 (blackHole).
   if (gEffectPin == 8) gEffectPin = TOGA_EFFECT_OFF;
-  if (!(gEffectPin < 90 || gEffectPin == TOGA_EFFECT_OFF || gEffectPin == TOGA_EFFECT_FOLLOW))
-    gEffectPin = EFFECT_FOLLOW;                                  // incl. any stale value
+  if (!validEffectPin(gEffectPin)) gEffectPin = EFFECT_FOLLOW;   // incl. any stale value
   gGain = constrain((int)gGain, 10, 200);
   if (gGap < TOGA_GAP_OFF) gGap = TOGA_GAP_OFF;   // 0 in NVS (never written) → every LED
   if (gFloorFlow > TOGA_FLOOR_MAX) gFloorFlow = TOGA_FLOOR_OFF;   // stale/garbage → off
@@ -308,8 +336,8 @@ bool saveConfig() {
   prefs.putUShort("h",   cfgH);
   prefs.putUChar("pin",  cfgPin);
   prefs.putUChar("eff",  gEffectPin);
+  prefs.putUChar("lhue", gLocalHue);
   prefs.putUChar("gain", gGain);
-  prefs.putUChar("bmon", battMonEn);
   prefs.putUChar("follow", gFollowMask);
   prefs.putUChar("gap",  gGap);
   prefs.putUChar("floor", gFloorFlow);
@@ -350,12 +378,12 @@ void applyModCfg(const TogaModCfgMsg& c) {
   // it and fall through; it never touches gEffectPin or NVS.
   if (c.effectPin == TOGA_EFFECT_IDENTIFY) { gIdentifyUntil = millis() + IDENTIFY_MS; Serial.println(F("modcfg: identify blink")); }
   bool dirty = false;
-  if (c.effectPin != TOGA_CFG_KEEP &&
-      (c.effectPin < 90 || c.effectPin == TOGA_EFFECT_OFF || c.effectPin == TOGA_EFFECT_FOLLOW)) {
+  if (c.effectPin != TOGA_CFG_KEEP && validEffectPin(c.effectPin)) {   // grid mode / OFF / FOLLOW / local / auto
     gEffectPin = c.effectPin; dirty = true;
   }
+  if (c.localHue != TOGA_LOCALHUE_KEEP) { gLocalHue = c.localHue; dirty = true; }   // independent-mode colour (v10)
   if (c.gain != 0) { gGain = constrain((int)c.gain, 10, 200); dirty = true; }
-  if (c.battMon != TOGA_CFG_KEEP) { battMonEn = c.battMon ? 1 : 0; dirty = true; }
+  // c.battMon is ignored: undervoltage lockout is hardwired ON and can't be turned off.
   if (c.followMask != TOGA_FOLLOW_KEEP) { gFollowMask = c.followMask & TOGA_FOLLOW_ALL; dirty = true; }
   if (c.gap != TOGA_GAP_KEEP) { gGap = c.gap; dirty = true; }   // 1 = every LED, N = every Nth (v7)
   if (c.floorFlow != TOGA_FLOOR_KEEP && c.floorFlow <= TOGA_FLOOR_MAX) { gFloorFlow = c.floorFlow; dirty = true; }   // floor-strip flow (v8)
@@ -363,8 +391,8 @@ void applyModCfg(const TogaModCfgMsg& c) {
   if (dirty) {                              // persist the live settings (not staged w/h/pin)
     prefs.begin("module", false);
     prefs.putUChar("eff",  gEffectPin);
+    prefs.putUChar("lhue", gLocalHue);
     prefs.putUChar("gain", gGain);
-    prefs.putUChar("bmon", battMonEn);
     prefs.putUChar("follow", gFollowMask);
     prefs.putUChar("gap",  gGap);
     prefs.putUChar("floor", gFloorFlow);
@@ -406,6 +434,8 @@ void sendHello(uint32_t t, bool linkAlive) {
   m.followMask = gFollowMask;
   m.gap       = gGap;                        // report the current output gap (v7)
   m.floorFlow = gFloorFlow;                  // report the floor-strip flow role (v8)
+  m.fwBuild   = gFwBuild;                     // report our firmware fingerprint (telemetry only)
+  m.localHue  = gLocalHue;                    // report the independent-mode colour (v10)
   strncpy(m.name, gName, sizeof(m.name));   // m is zero-init, so short names stay NUL-terminated
   m.uptimeS   = t / 1000;
   m.battMv    = (uint16_t)lroundf(battVolt * 1000.0f);
@@ -417,6 +447,7 @@ void printStatus() {
   bool alive = (espLastHeartbeat > 0) && ((millis() - (uint32_t)espLastHeartbeat) < HEARTBEAT_TIMEOUT);
   Serial.println(F("─── TOGA MODULE ───"));
   Serial.printf("name     %s\n", gName);
+  Serial.printf("fw       build %04x  (proto v%d)\n", gFwBuild, TOGA_VERSION);
   Serial.printf("mac      %s  ch=%d\n", WiFi.macAddress().c_str(), TOGA_CHANNEL);
   Serial.printf("slave    0x%02x  (strobe=%d bright=%d beat=%d blackout=%d)\n", gFollowMask,
                 !!(gFollowMask & TOGA_FOLLOW_STROBE), !!(gFollowMask & TOGA_FOLLOW_BRIGHT),
@@ -428,9 +459,17 @@ void printStatus() {
   if (gEffectPin == EFFECT_FOLLOW)
     Serial.printf("effect   follow grid mode %d -> %u (%s)\n",
                   gAnimIndex, activeEffect(), effectName(activeEffect()));
+  else if (togaIsAutoEffect(gEffectPin))
+    Serial.printf("effect   INDEPENDENT auto-dance '%s'  — `follow` to track the grid again\n",
+                  togaAutoProgName(gEffectPin - TOGA_EFFECT_AUTO_BASE));
+  else if (togaIsLocalEffect(gEffectPin))
+    Serial.printf("effect   INDEPENDENT local '%s'  — `follow` to track the grid again\n",
+                  togaLocalEffectName(gEffectPin - TOGA_EFFECT_LOCAL_BASE));
   else
     Serial.printf("effect   PINNED %u (%s)  — `follow` to track the grid mode again\n",
                   gEffectPin, effectName(gEffectPin));
+  if (gLocalHue == 0) Serial.printf("color    native (no tint; used only when independent)\n");
+  else                Serial.printf("color    hue %u (used only when independent)\n", gLocalHue);
   Serial.printf("gain     %u%%\n", gGain);
   if (gGap > TOGA_GAP_OFF)
     Serial.printf("gap      %u  (every %u-th LED lit, %u dark between)\n", gGap, gGap, gGap - 1);
@@ -439,8 +478,8 @@ void printStatus() {
   Serial.printf("floor    %s\n", gFloorFlow == TOGA_FLOOR_FWD ? "flow FWD (button 5 scrolls this strip)" :
                                  gFloorFlow == TOGA_FLOOR_REV ? "flow REV (button 5 scrolls this strip)" :
                                  "off (normal module; ignores button 5)");
-  Serial.printf("battery  %.2f V  mon=%s  (cutoff %.2f V)\n",
-                battVolt, battMonEn ? "on" : "off", BATT_THRESHOLD_MV / 1000.0f * 2.0f);
+  Serial.printf("battery  %.2f V  mon=on (always)  (cutoff %.2f V, ignore < %.2f V = no cell / on charger)\n",
+                battVolt, BATT_THRESHOLD_MV / 1000.0f * 2.0f, BATT_SANITY_MV / 1000.0f * 2.0f);
   Serial.printf("link     %s\n", alive ? "alive" : "NO CONTROLLER");
   Serial.printf("net      %s   fallback hotspot '%s'%s\n",
                 gNetMode == NET_CONTROLLER ? "on togacontroller" :
@@ -457,9 +496,10 @@ void printStatus() {
   Serial.println(F("      floor <0|1|2> = floor-strip flow: 0 off, 1 fwd, 2 rev (button 5 scrolls flagged strips; persists now)"));
   Serial.println(F("      gap <n> = light every n-th LED, blank n-1 between (1 = every LED / off; persists immediately)"));
   Serial.println(F("      slave <mask> = follow bits (1=strobe 2=bright 8=beat 16=blackout; 31=all, 0=independent)"));
-  Serial.println(F("      bmon 1/0 = Li-Ion undervoltage lockout on/off (default off; persists immediately)"));
-  Serial.println(F("      effect <0-89>|off pins this module · effect -1 (or `follow`) tracks the grid mode"));
-  Serial.println(F("      effect/gain apply live · w/h/pin need save+reboot"));
+  Serial.println(F("      bmon = Li-Ion undervoltage lockout is hardwired ON (always; not switchable)"));
+  Serial.println(F("      effect <0-67>|off pins this module · effect -1 (or `follow`) tracks the grid mode"));
+  Serial.println(F("      local <0-9> = standalone effect · auto <0-2> = dance program · color <0-255> = independent-mode hue (0=native)"));
+  Serial.println(F("      effect/local/auto/gain apply live · w/h/pin need save+reboot"));
 }
 
 // Line-based, non-blocking.
@@ -489,6 +529,19 @@ void serialPoll() {
       else if (got == 2)                           gEffectPin = (uint8_t)constrain((int)val, 0, 89);
       printStatus();
     }
+    else if (!strcmp(cmd, "local")  && got == 2) {   // pin a standalone local effect (independent)
+      gEffectPin = (uint8_t)(TOGA_EFFECT_LOCAL_BASE + constrain((int)val, 0, TOGA_LOCAL_COUNT - 1));
+      printStatus();
+    }
+    else if (!strcmp(cmd, "auto")   && got == 2) {   // pin a standalone dance auto-program (independent)
+      gEffectPin = (uint8_t)(TOGA_EFFECT_AUTO_BASE + constrain((int)val, 0, TOGA_LOCAL_AUTO_COUNT - 1));
+      printStatus();
+    }
+    else if (!strcmp(cmd, "color")  && got == 2) {   // independent-mode colour: 0 = native, 1..255 = hue
+      gLocalHue = (uint8_t)constrain((int)val, 0, 255);
+      prefs.begin("module", false); prefs.putUChar("lhue", gLocalHue); prefs.end();   // persist now (like the web UI)
+      printStatus();
+    }
     else if (!strcmp(cmd, "follow")) { gEffectPin = EFFECT_FOLLOW; printStatus(); }
     else if (!strcmp(cmd, "name")) {                // user label (persists now, like the web UI)
       char nm[16] = {0};
@@ -514,10 +567,8 @@ void serialPoll() {
       prefs.begin("module", false); prefs.putUChar("floor", gFloorFlow); prefs.end();   // persist now
       printStatus();
     }
-    else if (!strcmp(cmd, "bmon")   && got == 2) {   // battery undervoltage lockout on/off
-      battMonEn = val ? 1 : 0;
-      prefs.begin("module", false); prefs.putUChar("bmon", battMonEn); prefs.end();   // persist now (safety config)
-      printStatus();
+    else if (!strcmp(cmd, "bmon")) {                  // undervoltage lockout is hardwired ON
+      Serial.println(F("bmon is permanent: undervoltage lockout is always on and can't be disabled."));
     }
     else if (!strcmp(cmd, "hotspot")) {              // fallback phone-hotspot creds (persist now)
       char ssid[33] = {0}, pass[65] = {0};
@@ -554,22 +605,33 @@ void serialPoll() {
 // the same code on a fully-lit panel computes a different gain, so copying
 // it would push the module AWAY from matching. The per-module `gain` trim,
 // set once by eye against the running grid, is what actually matches them.
-// Renders fx -> leds, rotating every lit pixel by the grid's global hue.
-// Non-destructive: fx keeps its native colours, so trails never compound.
-// Circular output shift (in LEDs) applied during a floor-strip flow pass; 0 = none.
-// Set by the flow block in loop(); makes the whole rendered frame scroll along the
-// strip so a floor strip appears to "flow" on a button-5 press.
-int16_t gFlowShift = 0;
-
-void showModule(uint8_t baseBri) {
-  uint8_t off = (uint8_t)(gHueBase + gHueAuto);
-  int sh = gFlowShift;                          // floor-flow scroll (0 = none)
-  if (off || sh) {
+// tintBypass = show fx[] verbatim (the moving-spot overlay paints its own white/warm
+// dots and must not be recoloured).
+void showModule(uint8_t baseBri, bool tintBypass = false) {
+  // Output colour transform, three mutually exclusive cases:
+  //  · FOLLOW: wear the grid's REAL sampled colour — force each lit pixel onto the
+  //    wall's dominant hue (gSingleColor, already rotation-folded), KEEP its sat/value
+  //    so the white-hot look and motion survive.
+  //  · independent + a picked colour (gLocalHue != 0): paint the effect in that colour —
+  //    force hue AND full saturation, so even a white/pale effect (Solid, spot-free) truly
+  //    takes the colour instead of only rotating an already-coloured pixel.
+  //  · independent + Nativ (gLocalHue == 0): leave the effect's own colours (rainbows etc.).
+  bool followGrid = (gEffectPin == TOGA_EFFECT_FOLLOW);
+  uint8_t cmode = 0;   // 0 = as-is, 1 = force hue (keep sat), 2 = force hue + full sat
+  uint8_t hv = 0;
+  if (tintBypass)          cmode = 0;
+  else if (followGrid)   { cmode = 1; hv = rgb2hsv_approximate(gSingleColor).hue; }
+  else if (gLocalHue)    { cmode = 2; hv = gLocalHue; }
+  if (cmode) {
     for (uint16_t i = 0; i < gNumLeds; i++) {
       CRGB c = fx[i];
-      if (off && (c.r | c.g | c.b)) { CHSV h = rgb2hsv_approximate(c); h.hue += off; c = h; }
-      uint16_t d = sh ? (uint16_t)(((uint32_t)i + (uint32_t)sh) % gNumLeds) : i;
-      leds[d] = c;
+      if (c.r | c.g | c.b) {
+        CHSV h = rgb2hsv_approximate(c);
+        h.hue = hv;
+        if (cmode == 2) h.sat = 255;
+        c = h;
+      }
+      leds[i] = c;
     }
   } else {
     memcpy(leds, fx, gNumLeds * sizeof(CRGB));
@@ -582,7 +644,7 @@ void showModule(uint8_t baseBri) {
     for (uint16_t i = 0; i < gNumLeds; i++)
       if (i % gGap) leds[i] = CRGB::Black;
   FastLED.setBrightness((uint8_t)constrain(
-      (int)lroundf(baseBri * (gGain / 100.0f) * gBeatGlow), 1, MAX_BRIGHTNESS));
+      (int)lroundf(baseBri * (gGain / 100.0f) * gBeatGlow), 0, MAX_BRIGHTNESS));   // 0 so a brightness-following module goes fully off with the grid
   FastLED.show();
 }
 
@@ -622,6 +684,8 @@ void drainHellos(uint32_t t) {
     e->battMv = m.battMv; e->battFlags = m.battFlags;
     e->gap = m.gap;
     e->floor = m.floorFlow;
+    e->fwBuild = m.fwBuild;
+    e->localHue = m.localHue;
     e->lastSeen = t;
   }
   for (int i = 0; i < MAX_MODULES; i++)
@@ -634,6 +698,8 @@ void seedSelfRow(uint32_t t) {
   e->gain = gGain; e->pin = cfgPin; e->linkAlive = 0;         // no controller in fallback
   e->gap = gGap;
   e->floor = gFloorFlow;
+  e->fwBuild = gFwBuild;                                      // our own build (we never hear our hello)
+  e->localHue = gLocalHue;
   e->w = gWidth; e->h = gHeight; e->uptimeS = t / 1000;
   e->battMv = (uint16_t)lroundf(battVolt * 1000.0f);
   e->battFlags = (battMonEn ? TOGA_BATT_F_ENABLED : 0) | (battLowCount > 0 ? TOGA_BATT_F_LOW : 0);
@@ -653,11 +719,13 @@ bool parseMac(const String& s, uint8_t out[6]) {
 // values). The channel-0 peer (see fallbackAddPeer) carries it on the hotspot
 // channel — a module addressing itself here is fine, its own onReceive applies it.
 void sendModCfg(const uint8_t mac[6], uint8_t effectPin, uint8_t gain, uint8_t battMon = TOGA_CFG_KEEP,
-                uint8_t gap = TOGA_GAP_KEEP, uint8_t floorFlow = TOGA_FLOOR_KEEP) {
+                uint8_t gap = TOGA_GAP_KEEP, uint8_t floorFlow = TOGA_FLOOR_KEEP,
+                uint8_t localHue = TOGA_LOCALHUE_KEEP) {
   TogaModCfgMsg m = {};
   togaInitHeader(m.h, TOGA_MSG_MODCFG, TOGA_GROUP_ALL, ++txSeq);
   memcpy(m.mac, mac, 6);
   m.effectPin = effectPin; m.gain = gain; m.battMon = battMon; m.gap = gap; m.floorFlow = floorFlow;
+  m.localHue = localHue;   // KEEP by default — m is zero-init and 0 means "native", not "leave alone"
   for (int i = 0; i < 3; i++) esp_now_send(TOGA_BCAST, (const uint8_t*)&m, sizeof(m));
 }
 void handleModules() {
@@ -667,7 +735,13 @@ void handleModules() {
              ",\"chOk\":true" +
              ",\"gridSeen\":false,\"gridMode\":0,\"effects\":[";
   for (uint8_t e = 0; e < TOGA_EFFECT_COUNT; e++) j += (e ? ",\"" : "\"") + String(togaEffectName(e)) + "\"";
-  j += "],\"follow\":" + String(TOGA_EFFECT_FOLLOW) + ",\"mods\":[";
+  j += "],\"locals\":[";
+  for (uint8_t e = 0; e < TOGA_LOCAL_COUNT; e++) j += (e ? ",\"" : "\"") + String(togaLocalEffectName(e)) + "\"";
+  j += "],\"autos\":[";
+  for (uint8_t e = 0; e < TOGA_LOCAL_AUTO_COUNT; e++) j += (e ? ",\"" : "\"") + String(togaAutoProgName(e)) + "\"";
+  j += "],\"localBase\":" + String(TOGA_EFFECT_LOCAL_BASE) +
+       ",\"autoBase\":" + String(TOGA_EFFECT_AUTO_BASE) +
+       ",\"follow\":" + String(TOGA_EFFECT_FOLLOW) + ",\"mods\":[";
   bool first = true;
   for (int i = 0; i < MAX_MODULES; i++) {
     if (!mods[i].used) continue;
@@ -685,7 +759,9 @@ void handleModules() {
          ",\"w\":" + String(mods[i].w) + ",\"h\":" + String(mods[i].h) +
          ",\"gap\":" + String(mods[i].gap) +
          ",\"floor\":" + String(mods[i].floor) +
+         ",\"lhue\":" + String(mods[i].localHue) +
          ",\"link\":" + String(mods[i].linkAlive ? "true" : "false") +
+         ",\"fw\":" + String(mods[i].fwBuild) +
          ",\"up\":" + String(mods[i].uptimeS) + "}";
   }
   j += "]}";
@@ -697,8 +773,17 @@ void handleSet() {
   uint8_t eff = TOGA_CFG_KEEP, gain = 0;
   if (server.hasArg("effect")) {
     int e = server.arg("effect").toInt();
-    if (e != TOGA_EFFECT_FOLLOW && (e < 0 || e >= TOGA_EFFECT_COUNT)) { server.send(400, "text/plain", "bad effect"); return; }
+    bool ok = e == TOGA_EFFECT_FOLLOW || e == TOGA_EFFECT_OFF || e == TOGA_EFFECT_IDENTIFY
+           || (e >= 0 && e < TOGA_EFFECT_COUNT)
+           || togaIsLocalEffect((uint8_t)e) || togaIsAutoEffect((uint8_t)e);
+    if (!ok) { server.send(400, "text/plain", "bad effect"); return; }
     eff = (uint8_t)e;
+  }
+  uint8_t lhue = TOGA_LOCALHUE_KEEP;
+  if (server.hasArg("color")) {                        // independent-mode colour: 0 = native, 1..255 = hue
+    int h = server.arg("color").toInt();
+    if (h < 0 || h > 255 || h == TOGA_LOCALHUE_KEEP) { server.send(400, "text/plain", "bad color"); return; }
+    lhue = (uint8_t)h;
   }
   if (server.hasArg("gain")) {
     int g = server.arg("gain").toInt();
@@ -717,7 +802,7 @@ void handleSet() {
     if (f < TOGA_FLOOR_OFF || f > TOGA_FLOOR_MAX) { server.send(400, "text/plain", "bad floor"); return; }
     floor = (uint8_t)f;
   }
-  sendModCfg(mac, eff, gain, TOGA_CFG_KEEP, gap, floor);
+  sendModCfg(mac, eff, gain, TOGA_CFG_KEEP, gap, floor, lhue);
   server.send(200, "application/json", "{\"sent\":true}");
 }
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html><head>
@@ -737,31 +822,55 @@ input[type=number]{width:70px}
 label{font-size:12px;color:#8a8a8a;min-width:52px}
 .pill{font-size:11px;padding:2px 6px;border-radius:9px;background:#2c2c2c;color:#9a9a9a}
 .empty{color:#8a8a8a;padding:20px 0;line-height:1.5}
+.sw{width:22px;height:22px;border-radius:50%;border:2px solid #333;cursor:pointer;display:inline-block}
+.sw.sel{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.2)}
 </style></head><body>
 <h1>TOGA Module (Fallback)</h1>
 <div class="bar" id="bar">…</div>
 <div id="list"></div>
 <script>
-let EFF=[],FOLLOW=255,touching=null;
+let EFF=[],LOCALS=[],AUTOS=[],LBASE=100,ABASE=120,FOLLOW=255,touching=null;
 const macid=m=>m.replace(/:/g,'');
+const fw=v=>(v||0).toString(16).padStart(4,'0');   // firmware build → 4-hex tag; all-same = all up to date
 function set(mac,q){fetch('/api/set?mac='+encodeURIComponent(mac)+'&'+q)}
+// Colour palette for the independent-mode tint. h = FastLED hue sent as ?color=;
+// h 0 = "Nativ" (no tint). c = an approx CSS colour just for the swatch. The KEEP
+// sentinel (254) is never emitted here, so a colour change never trips it.
+const PAL=[{n:'Nativ',h:0,c:'#666'},{n:'Rot',h:2,c:'#ff0000'},{n:'Orange',h:24,c:'#ff7a00'},
+  {n:'Gelb',h:64,c:'#ffe000'},{n:'Grün',h:96,c:'#12d100'},{n:'Türkis',h:128,c:'#00d0b0'},
+  {n:'Blau',h:160,c:'#0060ff'},{n:'Violett',h:192,c:'#8a2be2'},{n:'Magenta',h:224,c:'#ff30c0'},{n:'Pink',h:244,c:'#ff5090'}];
+// Effect dropdown, grouped: dance autos + standalone effects (independent) first,
+// then "folgt Grid", then the raw grid modes. Value carries the effectPin sent.
+function optsFor(m){ const sel=v=>(m.eff==v?' selected':'');
+  let h='<optgroup label="Auto-Tanz">';
+  AUTOS.forEach((n,i)=>h+='<option value="'+(ABASE+i)+'"'+sel(ABASE+i)+'>Auto: '+n+'</option>');
+  h+='</optgroup><optgroup label="Standalone">';
+  LOCALS.forEach((n,i)=>h+='<option value="'+(LBASE+i)+'"'+sel(LBASE+i)+'>'+n+'</option>');
+  h+='</optgroup><option value="'+FOLLOW+'"'+sel(FOLLOW)+'>folgt Grid</option>';
+  h+='<optgroup label="Grid-Modi">';
+  EFF.forEach((n,i)=>h+='<option value="'+i+'"'+sel(i)+'>'+i+' '+n+'</option>');
+  return h+'</optgroup>'; }
 async function tick(){
   let d; try{d=await(await fetch('/api/modules')).json()}catch(e){return}
-  EFF=d.effects;FOLLOW=d.follow;
+  EFF=d.effects;LOCALS=d.locals;AUTOS=d.autos;LBASE=d.localBase;ABASE=d.autoBase;FOLLOW=d.follow;
+  const vers=[...new Set(d.mods.filter(m=>m.online).map(m=>m.fw))];
   document.getElementById('bar').textContent =
-    'Kein Controller — Notmodus · Kanal '+d.ch+' · '+d.mods.length+' Module';
+    'Kein Controller — Notmodus · Kanal '+d.ch+' · '+d.mods.length+' Module'+
+    (vers.length>1?' · ⚠ '+vers.length+' verschiedene Versionen!':(vers.length==1?' · alle Version '+fw(vers[0]):''));
   const L=document.getElementById('list');
   if(!d.mods.length){L.innerHTML='<div class="empty">Noch kein Modul geh&ouml;rt.</div>';return}
+  const runName=e=>e>=ABASE?('Auto: '+(AUTOS[e-ABASE]||'?')):e>=LBASE&&e<LBASE+LOCALS.length?(LOCALS[e-LBASE]||'?'):(EFF[e]||'?');
   L.innerHTML=d.mods.map(m=>{
     const id=macid(m.mac);
-    const opts=EFF.map((n,i)=>'<option value="'+i+'"'+(m.eff==i?' selected':'')+'>'+n+'</option>').join('')
-      +'<option value="'+FOLLOW+'"'+(m.eff==FOLLOW?' selected':'')+'>folgt Grid</option>';
+    const swatches=PAL.map(p=>'<span class="sw'+(m.lhue==p.h?' sel':'')+'" data-h="'+p.h+'" title="'+p.n+'" style="background:'+p.c+'"></span>').join('');
     return '<div class="m '+(m.online?'on':'off')+'">'+
       '<span class="mac">'+m.mac+'</span> '+
       '<span class="pill">'+(m.online?'online':('weg seit '+m.age+'s'))+'</span>'+
       '<div class="meta">'+m.w+'&times;'+m.h+' · Pin '+m.pin+' · Gruppe '+m.grp+
-        ' · l&auml;uft: '+(EFF[m.effNow]||'?')+' · up '+m.up+'s</div>'+
-      '<div class="row"><label>Effekt</label><select id="e'+id+'">'+opts+'</select></div>'+
+        ' · l&auml;uft: '+runName(m.effNow)+' · Version '+fw(m.fw)+' · up '+m.up+'s</div>'+
+      '<div class="row"><label>Effekt</label><select id="e'+id+'">'+optsFor(m)+'</select></div>'+
+      '<div class="row" id="c'+id+'"><label>Farbe</label>'+swatches+
+        '<span class="pill">nur eigenst&auml;ndig (nicht bei „folgt Grid")</span></div>'+
       '<div class="row"><label>Gain</label><input type="range" min="10" max="200" value="'+m.gain+
         '" id="g'+id+'"><span id="gv'+id+'">'+m.gain+'%</span></div>'+
       '<div class="row"><label>Gap</label><input type="number" min="1" max="255" value="'+(m.gap||1)+
@@ -778,6 +887,8 @@ async function tick(){
     s.onfocus=()=>{touching=id};                       // dropdown open → pause the re-render
     s.onblur=()=>{if(touching===id)touching=null};
     s.onchange=e=>{set(m.mac,'effect='+e.target.value);touching=null};
+    document.getElementById('c'+id).querySelectorAll('.sw').forEach(sw=>sw.onclick=()=>{
+      set(m.mac,'color='+sw.dataset.h);touching=id;setTimeout(()=>{if(touching===id)touching=null},3000); });
     const g=document.getElementById('g'+id);
     g.oninput=e=>{document.getElementById('gv'+id).textContent=e.target.value+'%';touching=id};
     g.onchange=e=>{set(m.mac,'gain='+e.target.value);touching=null};
@@ -809,6 +920,7 @@ void fallbackAddPeer() {
 }
 void enterFallback() {
   gNetMode = NET_FALLBACK;
+  gFallbackFlashUntil = millis() + TOGA_FALLBACK_FLASH_MS;  // flash blue for 5s to signal "I'm at toga-mod.local now"
   Serial.printf("net: no controller in %lus — joining fallback hotspot '%s'\n",
                 (unsigned long)(TOGA_FALLBACK_MS / 1000), gHotSsid);
   if (gHotSsid[0] == '\0') { Serial.println(F("net: NO hotspot SSID set — `hotspot <ssid> <pass>`")); }
@@ -947,6 +1059,7 @@ void setup() {
   // set BEFORE the callback goes live: it is what onReceive filters on, and a
   // zero MAC there would silently match nothing it should.
   WiFi.macAddress(gMyMac);
+  gFwBuild = TOGA_FW_BUILD;                 // fingerprint THIS build so the web UI can spot a stale module
   // First-boot name: mod-<last 3 MAC bytes>, matching the OTA hostname. Persist it
   // so it survives and the web UI shows something human before anyone renames it.
   if (gName[0] == '\0') {
@@ -1004,9 +1117,14 @@ void loop() {
   // ── Controller alive? (heartbeat within timeout) ──
   bool senderAlive = (espLastHeartbeat > 0) &&
                      ((t - (uint32_t)espLastHeartbeat) < (uint32_t)HEARTBEAT_TIMEOUT);
-  // LED: solid = controller heartbeat alive; slow blink = fallback (phone hotspot);
-  // off = looking for the controller.
-  digitalWrite(LED_BLUE, gNetMode == NET_FALLBACK ? (int)((t / 250) % 2) : (senderAlive ? 1 : 0));
+  // LED: solid = controller heartbeat alive; fast blink for 5s right after we give
+  // up and open toga-mod.local (fallback), then off; off = looking for the controller.
+  int blueLevel;
+  if (gNetMode == NET_FALLBACK)
+    blueLevel = (t < gFallbackFlashUntil) ? (int)((t / 250) % 2) : 0;
+  else
+    blueLevel = senderAlive ? 1 : 0;
+  digitalWrite(LED_BLUE, blueLevel);
 
   // ── Announce ourselves so the web UI can list and address us ──
   sendHello(t, senderAlive);
@@ -1027,6 +1145,9 @@ void loop() {
 
     if (!battMonEn) {
       battLowCount = 0;                            // monitoring off → never trips
+    } else if (mv_filt < BATT_SANITY_MV) {         // implausibly low → no cell on the sense path
+      battLowCount = 0;                            // (battery switch off, running from the charge
+                                                   // jack). Treat as a bad reading, never sleep.
     } else if (mv_filt < BATT_THRESHOLD_MV) {      // compare the FILTERED value, never the raw
       battLowCount++;
       if (battLowCount >= BATT_CONFIRM) {
@@ -1096,10 +1217,10 @@ void loop() {
 
   // ── 1. Strobe overrides everything ──
   if (strobeActive) {
-    // Absolute grid, identical maths to the grid's — a module's show() takes
-    // ~30us per LED, so chaining intervals made a 512px strip run visibly slower
-    // than a 32px one. See togaStrobeOn() in <toga_proto.h>.
-    bool want = togaStrobeOn(t, strobeStart, gStrobeGap);
+    // Same on/off rhythm as the mode/castle strobe (one global strobe speed, synced
+    // from the grid). Absolute grid so a module's slow show() cannot stretch it — a
+    // 512px strip and a 32px one flash in lockstep. See togaSquareOn() in toga_proto.h.
+    bool want = togaSquareOn(t, strobeStart, gStrobeOnMs, gStrobeOffMs);
     if (want != strobeOn) {
       strobeOn = want;
       CRGB sc = (gStrobeHue == 0) ? CRGB(255, 255, 255) : CRGB(CHSV(gStrobeHue, 255, 255));
@@ -1152,35 +1273,38 @@ void loop() {
     gVirtMs  += FRAME_MS;
     gTimebase = t - gVirtMs;                       // ⇒ (millis() - gTimebase) == gVirtMs
   }
-  // ── 3c. Floor-strip flow: a module flagged as a floor strip (gFloorFlow != OFF)
-  //    reacts to the controller's spot key (phys 5). Each PRESS launches one flow
-  //    pass that scrolls this strip's CURRENT render (the grid mode, when slaving)
-  //    once end-to-end in the flagged direction, over MOD_SPOT_PERIOD of VIRTUAL
-  //    time (so Speed scales it, like every other motion). Non-floor modules ignore
-  //    the key entirely — button 5 now only flows the floor strips. The scroll is
-  //    applied in showModule() via gFlowShift; strobe/castle/blackout already
-  //    returned above and take precedence.
-  static bool     espSpotPrev = false;
-  static uint32_t flowStartV  = 0;
-  static bool     flowActive  = false;
-  if (senderAlive && espSpot && !espSpotPrev && gFloorFlow != TOGA_FLOOR_OFF) {
-    flowActive = true; flowStartV = gVirtMs;                        // one pass per press
+  // ── 3c. Spot key (phys 5): a bright dot glides down THIS strip in the floor
+  //    direction (FWD if unflagged), in step with the wall's expanding squares.
+  //    Works on EVERY module (not just floor strips). Driven by the REAL clock so
+  //    it reads the same at any Speed, and holding the key streams a fresh dot every
+  //    MOD_SPOT_GAP. While any dot is in flight the spots OVERRIDE the normal render;
+  //    strobe/castle/blackout already returned above and take precedence.
+  static bool     espSpotPrev   = false;
+  static uint32_t lastSpotLaunch = 0;
+  if (senderAlive && espSpot &&
+      (!espSpotPrev || (uint32_t)(t - lastSpotLaunch) >= MOD_SPOT_GAP)) {
+    spotLaunch(t); lastSpotLaunch = t;
   }
   espSpotPrev = espSpot;
-  if (flowActive) {
-    uint32_t el = gVirtMs - flowStartV;
-    if (el >= MOD_SPOT_PERIOD || gFloorFlow == TOGA_FLOOR_OFF) { flowActive = false; gFlowShift = 0; }
-    else {
-      uint16_t n = gNumLeds ? gNumLeds : 1;
-      uint16_t base = (uint16_t)(((uint32_t)el * n) / MOD_SPOT_PERIOD) % n;      // 0 → n over the pass
-      gFlowShift = (gFloorFlow == TOGA_FLOOR_REV) ? (int16_t)((n - base) % n) : (int16_t)base;
-    }
-  } else gFlowShift = 0;
+  if (spotsActive()) {
+    renderSpots(t);                                  // real-clock white dots, floor direction
+    showModule(gBri, /*tintBypass=*/true);           // show verbatim — the dots keep their own colour
+    return;
+  }
 
-  // One procedural render per frame from the virtual clock. The 90 1D modes are
-  // analytic in gVirtMs — Speed already lives in how fast it advances — so a single
-  // call suffices. showModule() then scrolls the frame by gFlowShift (floor flow),
-  // rotates it by the grid hue, and applies brightness/beat/gap.
-  modRender(activeEffect(), gVirtMs, gWidth);
+  // Independent (not following the grid's mode): pin the auto-rotation off and stamp
+  // gHueBase = gLocalHue so the mode-strobe flash (which reads gHueBase+gHueAuto) fires
+  // in the module's own picked colour. showModule() paints the effect itself from
+  // gLocalHue directly (absolute colour, gLocalHue == 0 → the effect's native colours).
+  if (moduleIndependent()) { gHueBase = gLocalHue; gHueAuto = 0; }
+
+  // One procedural render per frame from the virtual clock. modRenderAny() routes
+  // the effect id to the grid-citation, local-effect, or dance-auto path; all are
+  // analytic in gVirtMs (Speed lives in how fast it advances), so one call suffices.
+  // showModule() then recolours (grid/local colour) and applies brightness/beat/gap.
+  modRenderAny(activeEffect(), gVirtMs);
+  // Match the grid's live lit-LED ratio: only while FOLLOWing the grid's mode (a
+  // pinned/local effect keeps its own look). Trims excess-lit columns to gCoverage.
+  if(gEffectPin == TOGA_EFFECT_FOLLOW) modCoverGate(gCoverage);
   showModule(modeStrobeHeld ? (uint8_t)min((int)gBri * 7 / 4, 255) : gBri);
 }

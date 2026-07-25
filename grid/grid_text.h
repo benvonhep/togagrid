@@ -139,7 +139,9 @@ uint32_t overlayUntil=0;
 char     overlayNum[4];     // "40" (mode) or "A2" (auto mood)
 uint8_t  overlayMood=0;     // 0 = mode readout (white), 1..4 = that mood's colour
 void triggerOverlay(uint32_t t,int idx){
-  int n=idx+1; char* p=overlayNum;
+  // 0-based, matching the anim switch / MODE_TABLE / MODE_NAMES.md: setupGrid is
+  // index 0 and reads out as "0", heartbeat as "1", … (not idx+1).
+  int n=idx; char* p=overlayNum;
   if(n>=10) *p++=(char)('0'+n/10);
   *p++=(char)('0'+n%10); *p=0;
   overlayMood=0;

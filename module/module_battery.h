@@ -26,7 +26,18 @@
 #define BATT_PIN          34      // GPIO34 = ADC1_CHANNEL_6 (used below as the channel)
 #define BATT_CHECK_MS     10000   // measurement interval
 #define BATT_SAMPLES      8
-#define BATT_THRESHOLD_MV 1650    // at the pin -> 3.30 V cell. (1500 -> 3.00 V cutoff)
+#define BATT_THRESHOLD_MV 1500    // at the pin -> 3.00 V cell = the undervoltage cutoff
+// Lower plausibility bound. A connected, working Li-Ion never sits below ~2.5 V (its
+// protection PCB cuts off -> open circuit). A reading BELOW this floor therefore means
+// no cell is on the sense path — the mechanical battery switch is off and the device is
+// running from the charge jack — so GPIO34 is pulled to ~0 V through the bottom divider
+// resistor. That must NOT be treated as undervoltage (no false deep-sleep). Deliberately
+// far below BATT_THRESHOLD_MV so it never masks real cell protection (which trips at
+// 3.00 V, long before a discharging cell ever reaches this floor). Set to 2.00 V —
+// a deliberate margin below the battery PCB's 2.54 V cutoff so component tolerances
+// on that cutoff can never push a real (protected) cell under this floor and be
+// misread as "no cell".
+#define BATT_SANITY_MV    1000    // at the pin -> 2.00 V cell
 #define BATT_CONFIRM      3       // consecutive breaches -> ~30s before shutdown
 #define IIR_ALPHA         0.15f   // tau = -10s/ln(0.85) ~= 61s; ~3min to fully track a step
 
@@ -36,10 +47,14 @@ float    battFiltered_mV = -1.0f;   // -1 = uninitialised sentinel (first sample
 float    battVolt        = 0.0f;    // cell volts — exposed globally for UI/telemetry
 int      battLowCount    = 0;
 uint32_t lastBattCheck   = 0;
-uint8_t  battMonEn       = 0;       // 0 = monitoring disabled (DEFAULT); NVS key "bmon".
-                                    // Must default OFF: with no cell/divider the pin floats
-                                    // and reads arbitrary values, which would otherwise
-                                    // trigger a false shutdown during USB-only bench testing.
+// Undervoltage lockout is ALWAYS ON — hardwired, not configurable. There is no
+// "off" any more (no NVS toggle, no web/serial switch): every deployed module
+// runs on a Li-Ion cell and must protect it. Kept as a variable (not a #define)
+// only because the hello telemetry still reports it in battFlags.
+// Bench note: on USB with no cell the pin floats/reads ~0 V, so the module will
+// deep-sleep ~30 s after boot. That is now expected — power a cell (or wire the
+// divider) to bench-test, or temporarily set this to 0 locally.
+const uint8_t battMonEn = 1;
 
 // Survives deep sleep in RTC RAM. No wake source is configured, so the device
 // stays asleep until a REAL power cycle (supply fully removed) clears RTC RAM

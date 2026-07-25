@@ -34,7 +34,61 @@ void clearAll() {
 // gHueSpeed is the ACTIVE mode's hue-speed; each mode keeps its own in
 // hueSpeedByMode[] (restored on mode change), exactly like the brightness factor.
 uint8_t gHueBase=0, gHueAuto=0, gHueSpeed=0, gStrobeHue=0;
+uint8_t gCoverage=0;   // live fraction of active LEDs lit, 0..255 — sent in sync so FOLLOW modules match it
+uint8_t gFrameHue=0;   // dominant hue of the rendered wall this frame (post-rotation) — sent so FOLLOW modules wear the real grid colour
 uint8_t hueSpeedByMode[MAX_MODES];   // per-mode hue-speed 0..HUE_SPEED_MAX
+
+// ── Per-mode speed RANGE ──────────────────────────────────────────
+// The Speed knob (button 14) reads 0.1..4.0 for every mode, but the visual speed
+// that "0.1" and "4.0" MEAN differs per mode: some tops were too slow, some floors
+// too fast. So the knob is a normalized dial that maps linearly onto a per-mode
+// [lo..hi] effective-speed window. Default {0.1,4.0} reproduces the old behaviour
+// exactly; overrides in initModeSpeed() raise a ceiling ("max Nx") or drop a floor
+// ("min ¼") independently. The remapped value is what drives virtualT AND what is
+// sent to the modules (sync.animSpeed), so grid and strips stay in lockstep.
+struct SpeedRange { float lo, hi; };
+SpeedRange gModeSpeed[MAX_MODES];
+void initModeSpeed(){
+  for(int i=0;i<MAX_MODES;i++){ gModeSpeed[i].lo=0.1f; gModeSpeed[i].hi=4.0f; }
+  auto R=[&](int m,float lo,float hi){ if(m>=0&&m<MAX_MODES){gModeSpeed[m].lo=lo; gModeSpeed[m].hi=hi;} };
+  //   mode                     lo      hi     (user request)
+  R( 4, 0.10f,  4.0f);   // earthquake — now speed-responsive (switch passes `at`)
+  R( 8, 0.10f,  8.0f);   // mitosis            max 2x
+  R(11, 0.025f, 4.0f);   // pulsar             min ¼
+  R(12, 0.10f,  6.0f);   // liquidMetal        max +50%
+  R(15, 0.10f,  8.0f);   // lavaLamp           max 2x
+  R(17, 0.10f,  8.0f);   // gravityLens        max 2x
+  R(21, 0.05f,  4.0f);   // squareRain         min −50%
+  R(22, 0.10f, 12.0f);   // depthMap           max 3x
+  R(23, 0.10f, 20.0f);   // cosmicDust         max 5x
+  R(24, 0.10f,  8.0f);   // heartglow          max 2x
+  R(25, 0.02f,  4.0f);   // evolution          min 20%
+  R(26, 0.05f,  8.0f);   // morph              max 2x, min slower
+  R(27, 0.05f, 20.0f);   // strangeAttractor   max 5x, min ½
+  R(30, 0.10f,  8.0f);   // tetris             max 2x
+  R(31, 0.10f, 11.0f);   // bouncingLogo       max ~3x
+  R(32, 0.10f,  8.0f);   // starTunnel3D       max 2x
+  R(34, 0.10f, 12.0f);   // spiralGalaxy       max 3x
+  R(35, 0.10f, 11.0f);   // boids              max ~3x
+  R(40, 0.10f, 12.0f);   // smiley             max 3x
+  R(43, 0.10f,  8.0f);   // warp               max 2x
+  R(44, 0.10f,  8.0f);   // shootingStars      max 2x
+  R(46, 0.10f,  6.0f);   // pulsar2            max 1.5x
+  R(53, 0.10f,  6.0f);   // aliens             a touch faster
+  R(56, 0.10f, 12.0f);   // confetti           max 3x
+  R(57, 0.10f, 11.0f);   // spiralEject        max ~3x
+  R(58, 0.025f, 4.0f);   // clouds3d           min ¼
+  R(61, 0.10f,  6.0f);   // starsFlying        max 1.5x
+  R(62, 0.20f,  6.0f);   // firework2          max 1.5x, min 2x faster
+  R(66, 0.20f,  8.0f);   // squareImplode      max 2x, min 2x faster
+  R(67, 0.50f,  4.0f);   // plasmaLightning    lift floor so slow still shows
+}
+// Map the 0.1..4.0 knob onto this mode's [lo..hi] window (linear).
+float togaModeSpeed(int mode, float knob){
+  const SpeedRange& s = gModeSpeed[constrain(mode,0,MAX_MODES-1)];
+  float f = (constrain(knob,0.1f,4.0f) - 0.1f) / 3.9f;   // 0..1
+  return s.lo + (s.hi - s.lo) * f;
+}
 // ── Auto brightness normalization state (Task 2b) ──
 uint8_t gBaseBri=40;     // per-frame base brightness the AGC multiplies (set by loop)
 float   gAgcGain=1.0f;   // smoothed AGC gain
@@ -60,19 +114,31 @@ bool gOverlayPainted=false;   // did showGrid() paint it this frame?
 void showGrid(){
   uint8_t off=(uint8_t)(gHueBase+gHueAuto);
   uint32_t lum=0;
+  uint32_t litCnt=0;               // # of active LEDs meaningfully lit → drives the coverage sync
+  uint32_t sumR=0,sumG=0,sumB=0;   // running colour of the lit pixels → dominant frame hue (post-rotation)
+  const int COVER_THR=24;          // sum-of-channels a pixel must beat to count as "lit" (skips AA fringe)
   for(int e=0;e<NUM_ELEC;e++) for(int i=0;i<LEDS_PER_STRIP;i++){
     CRGB* p=&ledsX[e][i]; if(off && (p->r|p->g|p->b)){ CHSV h=rgb2hsv_approximate(*p); h.hue+=off; *p=h; }
-    lum += p->r+p->g+p->b;
+    { int s=p->r+p->g+p->b; lum+=s; if(s>COVER_THR){ litCnt++; sumR+=p->r; sumG+=p->g; sumB+=p->b; } }
     p=&ledsY[e][i];       if(off && (p->r|p->g|p->b)){ CHSV h=rgb2hsv_approximate(*p); h.hue+=off; *p=h; }
-    lum += p->r+p->g+p->b;
+    { int s=p->r+p->g+p->b; lum+=s; if(s>COVER_THR){ litCnt++; sumR+=p->r; sumG+=p->g; sumB+=p->b; } }
   }
+  // Dominant wall colour: average the lit pixels (already hue-rotated above) and keep its
+  // hue. FOLLOW modules paint their animation in this hue so they wear the grid's real
+  // colour, not a hand-authored guess. Nothing lit → hold the last hue (avoids /0 flicker).
+  if(litCnt){ CRGB avg((uint8_t)(sumR/litCnt),(uint8_t)(sumG/litCnt),(uint8_t)(sumB/litCnt)); gFrameHue=rgb2hsv_approximate(avg).hue; }
+  // Coverage = lit active LEDs / total active LEDs. Each electrode buffer holds two
+  // 121-LED strips (odd+even) for X and again for Y; dead spacer/return LEDs are
+  // always black so they never reach COVER_THR and drop out of the count for free.
+  const uint32_t activeN = (uint32_t)NUM_ELEC*2u*2u*LEDS_ACTIVE;   // 6*2*2*121 = 2904
+  gCoverage = (uint8_t)constrain((int)((litCnt*255u + activeN/2)/activeN),0,255);
   // AGC: scale a global gain so every mode lands near a common perceived level.
   const float N=(float)NUM_ELEC*LEDS_PER_STRIP*2.0f;
   float avg=(float)lum/N;                                        // avg sum-of-channels/pixel
   float gainTarget=constrain(AGC_TARGET/fmaxf(avg,1.0f),AGC_MIN,AGC_MAX);
   if(gAgcSnap){ gAgcGain=gainTarget; gAgcSnap=false; }           // instant on mode change
   else         gAgcGain+=(gainTarget-gAgcGain)*AGC_K;            // else slow-smooth
-  FastLED.setBrightness((uint8_t)constrain((int)lroundf(gBaseBri*gAgcGain*gBeatGlow),1,MAX_BRIGHTNESS));
+  FastLED.setBrightness((uint8_t)constrain((int)lroundf(gBaseBri*gAgcGain*gBeatGlow),0,MAX_BRIGHTNESS));
   // Mode number last: after the hue rotation above, so it is never tinted, and
   // after the AGC measurement, so a bright glyph cannot dim the whole wall.
   // Only ever SET the flag here — loop() clears it once per frame. Clearing it
@@ -169,6 +235,8 @@ volatile bool     espModeStrobe   = false;
 volatile bool     espCastleStrobe = false;
 volatile bool     espBlackout     = false;   // latched blackout (button 10); rides the flags like the strobes
 volatile bool     espSpot         = false;   // moving-spot key (phys 5); modules chase dots, wall drives a tunnel
+volatile bool     espSweep        = false;   // latched speed-sweep (phys 4 / logical 2); animSpeed rides a triangle
+bool              gSweepOn        = false;   // espSweep gated by senderAlive — loop-owned; a dead controller releases it
 volatile uint8_t  espAutoMode     = TOGA_AUTO_OFF;   // 0 = off, 1..4 = mood (button 0)
 volatile uint32_t espLastHeartbeat = 0;
 static uint8_t    senderMAC[6]     = {};
@@ -185,6 +253,7 @@ void onReceive(const uint8_t* mac, const uint8_t* data, int len) {
   espCastleStrobe  = (msg.flags & TOGA_F_CASTLE_STROBE) != 0;
   espBlackout      = (msg.flags & TOGA_F_BLACKOUT)      != 0;
   espSpot          = (msg.flags & TOGA_F_SPOT)          != 0;
+  espSweep         = (msg.flags & TOGA_F_SWEEP)         != 0;
   espAutoMode      = (msg.autoMode<=TOGA_AUTO_COUNT) ? msg.autoMode : TOGA_AUTO_OFF;
   uint32_t rx = millis();
   espLastHeartbeat = rx;
@@ -233,13 +302,16 @@ Preferences prefs;
 struct Settings {
   int     animIndex;
   uint8_t brightness;             // EFFECTIVE brightness = globalBri * modeFactor[animIndex]/255
-  uint8_t globalBri;              // global master, raw 1..MAX_BRIGHTNESS ("0..100%")
+  uint8_t globalBri;              // global master, raw 0..MAX_BRIGHTNESS (0 = off .. 100%)
   uint8_t modeFactor[MAX_MODES];  // per-mode factor 0..255 (0..1); scales the global master
   uint8_t strobeBrightness;
   uint8_t strobeOnMs;
   uint8_t strobeOffMs;
   uint8_t strobeSquares;
-  uint8_t strobeGapMs;    // button-15 strobe: gap between flashes (hold 15 + +/-)
+  uint8_t strobeGapMs;    // (legacy) button-15 gap; strobeSpeed drives the timing now
+  uint8_t strobeSpeed;    // ONE global strobe speed 0..STROBE_SPEED_MAX; derives strobeOnMs/OffMs for ALL three strobes
+  uint16_t autoDwellS;    // auto-mode dwell per mode, seconds (web UI, TOGA_P_AUTOINT)
+  uint16_t sweepPeriodS;  // speed-sweep min→max→min period, seconds (web UI, TOGA_P_SWEEPINT)
   float   animSpeed;      // ACTIVE mode's speed 0.1..4.0 (mirrors speedByMode[animIndex])
   float   speedByMode[MAX_MODES];  // per-mode remembered speed
   uint16_t beatMs;        // tapped beat period for the glow, 0 = off
@@ -252,7 +324,7 @@ Settings cfg;
 void recomputeBrightness() {
   cfg.brightness = (uint8_t)constrain(
       lround((long)cfg.globalBri * cfg.modeFactor[cfg.animIndex] / 255.0),
-      1, MAX_BRIGHTNESS);
+      0, MAX_BRIGHTNESS);                          // 0 allowed so the master can go fully off
   FastLED.setBrightness(cfg.brightness);
 }
 
@@ -275,6 +347,9 @@ void saveSettings() {
   prefs.putUChar("soff", cfg.strobeOffMs);
   prefs.putUChar("ssq",  cfg.strobeSquares);
   prefs.putUChar("sgap", cfg.strobeGapMs);
+  prefs.putUChar("sspd", cfg.strobeSpeed);    // global strobe speed
+  prefs.putUShort("aint", cfg.autoDwellS);    // auto-mode dwell (s)
+  prefs.putUShort("wint", cfg.sweepPeriodS);  // sweep period (s)
   prefs.putBytes("spdm", cfg.speedByMode, sizeof(cfg.speedByMode));   // per-mode speed
   prefs.putBytes("hspm", hueSpeedByMode, sizeof(hueSpeedByMode));     // per-mode hue-speed
   prefs.putUShort("beat", cfg.beatMs);        // beat-glow tempo
@@ -294,6 +369,9 @@ void loadSettings() {
   cfg.strobeOffMs      = prefs.getUChar("soff", 40);
   cfg.strobeSquares    = prefs.getUChar("ssq",  30);
   cfg.strobeGapMs      = prefs.getUChar("sgap", STROBE_GAP_DEF);
+  cfg.strobeSpeed      = prefs.getUChar("sspd", STROBE_SPEED_DEF);   // global strobe speed
+  cfg.autoDwellS       = prefs.getUShort("aint", AUTO_INT_DEF);      // auto-mode dwell (s)
+  cfg.sweepPeriodS     = prefs.getUShort("wint", SWEEP_INT_DEF);     // sweep period (s)
   bool spdOk           = prefs.getBytes("spdm", cfg.speedByMode, sizeof(cfg.speedByMode))
                            == sizeof(cfg.speedByMode);   // per-mode speed blob
   bool hspOk           = prefs.getBytes("hspm", hueSpeedByMode, sizeof(hueSpeedByMode))
@@ -303,7 +381,7 @@ void loadSettings() {
   gStrobeHue           = prefs.getUChar("shue", 0);
   prefs.end();
   cfg.animIndex        = constrain(cfg.animIndex, 0, TOTAL_ANIMS-1);
-  cfg.globalBri        = constrain(cfg.globalBri, 1, MAX_BRIGHTNESS);
+  cfg.globalBri        = constrain(cfg.globalBri, BRI_STEP, MAX_BRIGHTNESS);   // min = one step above off; blackout owns fully-off
   // Per-mode blobs: seed defaults if missing, then clamp every slot (NVS is not trusted).
   if(!facOk) for(int i=0;i<MAX_MODES;i++) cfg.modeFactor[i]=BRICOEF_MAX;
   for(int i=0;i<MAX_MODES;i++) cfg.modeFactor[i]=constrain(cfg.modeFactor[i],BRICOEF_MIN,BRICOEF_MAX);
@@ -313,10 +391,14 @@ void loadSettings() {
   for(int i=0;i<MAX_MODES;i++) hueSpeedByMode[i]=constrain(hueSpeedByMode[i],0,HUE_SPEED_MAX);
   applyModeSettings();                                            // active brightness/speed/hue-speed for this mode
   cfg.strobeBrightness = constrain(cfg.strobeBrightness, 1, 255);
-  cfg.strobeOnMs       = constrain(cfg.strobeOnMs, 5, 200);
-  cfg.strobeOffMs      = constrain(cfg.strobeOffMs, 5, 200);
   cfg.strobeSquares    = constrain(cfg.strobeSquares, 1, 122);
   cfg.strobeGapMs      = constrain(cfg.strobeGapMs, STROBE_GAP_MIN, STROBE_GAP_MAX);
+  // Strobe timing is derived from the ONE global speed: on/off for strobe(15),
+  // mode(14) and castle(13) all come from here, so they share the exact rhythm.
+  cfg.strobeSpeed      = constrain(cfg.strobeSpeed, STROBE_SPEED_MIN, STROBE_SPEED_MAX);
+  togaStrobeTiming(cfg.strobeSpeed, &cfg.strobeOnMs, &cfg.strobeOffMs);
+  cfg.autoDwellS       = constrain(cfg.autoDwellS,   TIMING_INT_MIN, TIMING_INT_MAX);
+  cfg.sweepPeriodS     = constrain(cfg.sweepPeriodS, TIMING_INT_MIN, TIMING_INT_MAX);
   // Beat-glow tempo: 0 stays off, otherwise clamp to a sane range and start the
   // clock. The phase is arbitrary until the first tap anchors it.
   if(cfg.beatMs){ cfg.beatMs=constrain(cfg.beatMs,BEAT_MIN_MS,BEAT_MAX_MS);
@@ -339,6 +421,7 @@ void loadSettings() {
 #include "animations/anim_games.h"
 #include "animations/anim_faces.h"
 #include "animations/anim_new.h"
+#include "animations/anim_new2.h"    // 5 new energy/plasma modes (68..71) + replaces 48
 
 void resetAnimState(uint32_t t) {
   rainInit=false;shockInit=false;novaInit=false;blobInit=false;
@@ -355,9 +438,10 @@ void resetAnimState(uint32_t t) {
 void setup() {
   Serial.begin(115200);
   randomSeed(analogRead(0));
+  initModeSpeed();
   loadSettings();
   Serial.printf("Loaded: anim=%d bri=%d strobeBri=%d on=%dms off=%dms\n",
-    cfg.animIndex+1,cfg.brightness,cfg.strobeBrightness,cfg.strobeOnMs,cfg.strobeOffMs);
+    cfg.animIndex,cfg.brightness,cfg.strobeBrightness,cfg.strobeOnMs,cfg.strobeOffMs);
 
   FastLED.addLeds<WS2812B,PIN_X0,GRB>(ledsX[0],LEDS_PER_STRIP);
   FastLED.addLeds<WS2812B,PIN_X1,GRB>(ledsX[1],LEDS_PER_STRIP);
@@ -400,29 +484,49 @@ static const uint8_t AUTO_SPACE[] = {19,43,32,34,45,7,5,47,48,44,42,61};
 static const uint8_t AUTO_PARTY[] = {2,21,36,62,56,63,64,10,11,57,4,33,60,54};
 static const uint8_t AUTO_SHOW[]  = {29,38,39,40,41,53,30,31,37,49,52};
 struct AutoMood { const uint8_t* list; uint8_t n; uint16_t everyMs; };
-static const AutoMood AUTO_MOODS[TOGA_AUTO_COUNT] = {   // everyMs = dwell at Speed 1.0
-  {AUTO_CALM,  sizeof(AUTO_CALM),  45000},   // 1 Ruhe   — langsam, flächig
-  {AUTO_SPACE, sizeof(AUTO_SPACE), 30000},   // 2 Space  — Sterne, Nebel, Planeten
-  {AUTO_PARTY, sizeof(AUTO_PARTY), 12000},   // 3 Party  — schnell, hart geschnitten
-  {AUTO_SHOW,  sizeof(AUTO_SHOW),  20000},   // 4 Show   — Spiele, Gesichter, Text
+static const AutoMood AUTO_MOODS[TOGA_AUTO_COUNT] = {   // everyMs = fixed dwell per mode
+  {AUTO_CALM,  sizeof(AUTO_CALM),  60000},   // 1 Ruhe   — langsam, flächig
+  {AUTO_SPACE, sizeof(AUTO_SPACE), 60000},   // 2 Space  — Sterne, Nebel, Planeten
+  {AUTO_PARTY, sizeof(AUTO_PARTY), 60000},   // 3 Party  — schnell, hart geschnitten
+  {AUTO_SHOW,  sizeof(AUTO_SHOW),  60000},   // 4 Show   — Spiele, Gesichter, Text
 };
 
-// How long the current mood holds a mode: the table value divided by the Speed
-// knob (8), so the one knob that already means "faster" also cuts faster —
-// Speed 4.0 → 4x quicker, Speed 0.1 → 10x longer. Read fresh every frame rather
-// than latched at the last step, so turning the knob bites on the CURRENT mode
-// instead of the next one: at 45s a latched value would feel broken.
-uint32_t autoDwellMs(uint8_t mood){
-  return (uint32_t)(AUTO_MOODS[mood-1].everyMs / constrain(cfg.animSpeed,0.1f,4.0f));
+// Runtime play order for the active mood: a shuffled permutation of the mood's
+// list indices. Rebuilt every time the automatic (re)starts AND again after each
+// full pass, so both the order and the mode it opens on are different each time.
+// Sized for the longest mood list with head-room. See shuffleMood() + the auto
+// block in loop().
+static uint8_t moodOrder[32];
+static void shuffleMood(uint8_t mood, int avoidFirst){   // avoidFirst: animIndex to NOT open on (-1 = don't care)
+  const AutoMood& md=AUTO_MOODS[mood-1];
+  for(uint8_t i=0;i<md.n;i++) moodOrder[i]=i;
+  for(int i=md.n-1;i>0;i--){ int j=random(i+1);          // Fisher-Yates on random() (seeded at boot)
+    uint8_t tmp=moodOrder[i]; moodOrder[i]=moodOrder[j]; moodOrder[j]=tmp; }
+  // Never reopen on the same mode two runs in a row — swap slot 0 with another.
+  if(avoidFirst>=0 && md.n>1 && md.list[moodOrder[0]]==(uint8_t)avoidFirst){
+    int j=1+random(md.n-1);
+    uint8_t tmp=moodOrder[0]; moodOrder[0]=moodOrder[j]; moodOrder[j]=tmp;
+  }
 }
 
-// Switch to entry `pos` of `mood` (1-based), exactly as a manual step would —
-// minus the save. An out-of-range list entry would be a typo above, not input.
+// How long the current mood holds a mode: a fixed dwell (default 60s), set from
+// the web UI (cfg.autoDwellS) and the same for every mood, sweeping or not.
+// Independent of the Speed knob — that scales the animation, not the auto dwell.
+uint32_t autoDwellMs(uint8_t mood){
+  (void)mood; return (uint32_t)cfg.autoDwellS * 1000u;   // web-UI value, same whether sweeping or not
+}
+
+// Switch to shuffle-position `pos` of `mood` (1-based), exactly as a manual step
+// would — minus the save. `pos` walks moodOrder[], not the raw list, so the order
+// follows the current shuffle.
 void autoShowMode(uint8_t mood, uint8_t pos, uint32_t t){
   const AutoMood& md=AUTO_MOODS[mood-1];
-  cfg.animIndex=constrain((int)md.list[pos%md.n],0,TOTAL_ANIMS-1);
+  cfg.animIndex=constrain((int)md.list[moodOrder[pos%md.n]],0,TOTAL_ANIMS-1);
   applyModeSettings();                             // brightness/speed/hue-speed for this mode
-  resetAnimState(t); triggerOverlay(t,cfg.animIndex);
+  resetAnimState(t);
+  // NO mode-number overlay in auto mode: the wall should just play, silently.
+  // Manual +/- steps (applyCommand) still flash the number; the mood letter
+  // (A1..A4) still flashes on a button-0 press via triggerOverlayMood().
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -519,14 +623,19 @@ void applyCommand(const TogaCmdMsg& m, uint32_t t){
   } else if(m.cmd==TOGA_CMD_PARAM){                 // parameter step
     int d=m.arg;
     switch(m.target){
-      case TOGA_P_BRI: cfg.globalBri=(uint8_t)constrain((int)cfg.globalBri+d*BRI_STEP,1,MAX_BRIGHTNESS); recomputeBrightness(); break;  // global master
+      case TOGA_P_BRI: cfg.globalBri=(uint8_t)constrain((int)cfg.globalBri+d*BRI_STEP,BRI_STEP,MAX_BRIGHTNESS); recomputeBrightness(); break;  // global master; floor one step above off (blackout does off)
       case TOGA_P_BRICOEF: cfg.modeFactor[cfg.animIndex]=(uint8_t)constrain((int)cfg.modeFactor[cfg.animIndex]+d*BRICOEF_STEP,BRICOEF_MIN,BRICOEF_MAX); recomputeBrightness(); break;  // this mode's factor
       case TOGA_P_SPEED: cfg.animSpeed=constrain(cfg.animSpeed+d*0.1f,0.1f,4.0f); cfg.speedByMode[cfg.animIndex]=cfg.animSpeed; break;  // per-mode speed
       case TOGA_P_COLOR: gHueBase  =(uint8_t)(gHueBase  +d*6); break;   // Color (wraps)
       case TOGA_P_STROBEHUE: gStrobeHue=(uint8_t)(gStrobeHue+d*6); break;   // Strobe colour (wraps)
       case TOGA_P_HUESPEED: gHueSpeed =(uint8_t)constrain((int)gHueSpeed+d,0,HUE_SPEED_MAX); hueSpeedByMode[cfg.animIndex]=gHueSpeed; break; // per-mode hue-speed
       case TOGA_P_STROBEGAP: cfg.strobeGapMs=(uint8_t)constrain((int)cfg.strobeGapMs+d*STROBE_GAP_STEP,
-                                                 STROBE_GAP_MIN,STROBE_GAP_MAX); break; // gap between flashes
+                                                 STROBE_GAP_MIN,STROBE_GAP_MAX); break; // legacy — no longer drives timing
+      case TOGA_P_STROBESPEED:   // ONE global strobe speed: re-derive on/off for all three strobes
+        cfg.strobeSpeed=(uint8_t)constrain((int)cfg.strobeSpeed+d*STROBE_SPEED_STEP,STROBE_SPEED_MIN,STROBE_SPEED_MAX);
+        togaStrobeTiming(cfg.strobeSpeed,&cfg.strobeOnMs,&cfg.strobeOffMs); break;
+      case TOGA_P_AUTOINT:  cfg.autoDwellS  =(uint16_t)constrain((int)d,TIMING_INT_MIN,TIMING_INT_MAX); break; // ABSOLUTE seconds (web UI)
+      case TOGA_P_SWEEPINT: cfg.sweepPeriodS=(uint16_t)constrain((int)d,TIMING_INT_MIN,TIMING_INT_MAX); break; // ABSOLUTE seconds (web UI)
     }
     saveSettings();
   } else if(m.cmd==TOGA_CMD_BEAT_TAP){              // one tap of button 11 → glow rhythm (NOT speed)
@@ -561,6 +670,7 @@ void loop() {
   // ── Sender alive? (heartbeat within timeout) ──────
   bool senderAlive = (espLastHeartbeat > 0) &&
                      ((t - (uint32_t)espLastHeartbeat) < (uint32_t)HEARTBEAT_TIMEOUT);
+  gSweepOn = senderAlive && espSweep;   // sweep only while the controller is present (like blackout/spot)
 
   // Sits here, not at the end of loop(): the strobe path below returns early on
   // every iteration while held, and a grid strobed through its first minute
@@ -602,30 +712,45 @@ void loop() {
     uint8_t mood = senderAlive ? espAutoMode : TOGA_AUTO_OFF;   // sender gone → automatic stops
     static uint8_t  moodPrev=TOGA_AUTO_OFF, moodPos=0;
     static uint32_t moodStart=0;                                // when the current mode came up
+    static int      lastAutoStart=-1;                           // animIndex the automatic last opened on
     if(!strobeActive){
       if(mood!=moodPrev){                                       // switched mood, or turned off
+        uint8_t wasMood=moodPrev;                               // remember to persist the mode when auto ends by hand
         moodPrev=mood; moodPos=0;
         // Nothing is drawn when the mood turns OFF: that only ever happens on a
         // manual +/- step, which is already flashing the mode number the press
         // asked for, or on the sender going away, where the wall announcing "A0"
         // would be reporting the controller's silence as a setting.
         if(mood){
+          shuffleMood(mood,lastAutoStart);                      // fresh order, opening on a new mode
+          lastAutoStart=AUTO_MOODS[mood-1].list[moodOrder[0]];
           autoShowMode(mood,moodPos,t); moodStart=t;
-          // AFTER autoShowMode: it flashes the MODE number, and the mood is the
-          // answer to the press that just happened. The mood's first mode is
-          // arriving anyway, and its number will flash on the next auto step.
+          // autoShowMode no longer draws the mode number (auto mode plays silent).
+          // The mood letter is the answer to the button-0 press that just happened.
           triggerOverlayMood(t,mood);
+        } else if(wasMood!=TOGA_AUTO_OFF && senderAlive){
+          // Automatic just ended by hand (+/-): the mode showing right now becomes
+          // the active one and is persisted, so it stays put and survives a reboot.
+          saveSettings();
         }
-      } else if(mood && (t-moodStart)>=autoDwellMs(mood)){      // dwell follows the Speed knob
-        moodPos=(uint8_t)((moodPos+1)%AUTO_MOODS[mood-1].n);
+      } else if(mood && (t-moodStart)>=autoDwellMs(mood)){      // fixed 60s dwell
+        moodPos++;
+        if(moodPos>=AUTO_MOODS[mood-1].n){ moodPos=0; shuffleMood(mood,-1); }  // reshuffle every full pass
         autoShowMode(mood,moodPos,t); moodStart=t;
       }
     }
   }
 
-  // 50 FPS cap for animations — but the strobe must run at full loop rate, else its
-  // timing is quantised to 20ms and the flash can never be short (that was the bug).
-  if(!strobeActive && t-lastFrame<20) return;
+  // 50 FPS cap for animations — but ALL THREE strobes must run at full loop rate.
+  // Otherwise their on/off edges are only sampled as often as a frame is allowed
+  // (every 20ms) AND, worse, as often as the current mode can actually render: on
+  // a heavy mode a single frame takes 40-80ms, so togaSquareOn was read that
+  // rarely and the SAME strobe looked fast on a light mode, slow/absent on a heavy
+  // one. The button-15 strobe was always exempt (strobeActive); the mode- and
+  // castle-strobe now are too, so all three flash one uniform rhythm on every mode.
+  bool strobeCapBypass = strobeActive ||
+                         (senderAlive && (espModeStrobe || espCastleStrobe));
+  if(!strobeCapBypass && t-lastFrame<20) return;
   lastFrame=t;
 
   // Accumulate scaled animation time
@@ -646,13 +771,30 @@ void loop() {
     uint16_t per=(uint16_t)lroundf(bPeriod);
     if(per!=cfg.beatMs){ cfg.beatMs=per; saveSettings(); }
   }
+  // Speed-sweep override: while on, the animation speed rides a min→max→min triangle
+  // instead of the mode's saved speed. The clock is ABSOLUTE (t), so switching mode
+  // just picks the sweep up where it is; auto-mode sweeps at half the 120s dwell.
+  float knobSpeed = gSweepOn ? togaSweepSpeed(t, (uint32_t)cfg.sweepPeriodS * 1000u)
+                             : cfg.animSpeed;
+  float animSpeed = togaModeSpeed(cfg.animIndex, knobSpeed);   // per-mode [lo..hi] remap
   static float virtualT = 0.0f;
-  virtualT += frameDt * cfg.animSpeed;
+  virtualT += frameDt * animSpeed;
   uint32_t at = (uint32_t)virtualT;
-  float    dt = frameDt * cfg.animSpeed;
+  float    dt = frameDt * animSpeed;
 
   // ── Auto-rotate the global hue by Hue-speed ───────
-  static float hueAcc=0; hueAcc+=togaHueRate(gHueSpeed)*frameDt; if(hueAcc>=256.0f)hueAcc-=256.0f; gHueAuto=(uint8_t)hueAcc;
+  // At Hue-speed 0 the colour must HOLD and only the Color key (button 8) may change
+  // it. The instant rotation stops, fold the current auto-offset into the base — no
+  // visible jump — and zero the offset; from then on the wall shows exactly gHueBase
+  // and never drifts. (RAM-only fold: no NVS write, so an auto-mode mode that lands
+  // on hue-speed 0 does not hammer flash. gHueBase persists on the next manual save.)
+  static float hueAcc=0; static uint8_t prevHueSpeed=0;
+  if(gHueSpeed==0){
+    if(prevHueSpeed!=0){ gHueBase=(uint8_t)(gHueBase+gHueAuto); gHueAuto=0; hueAcc=0; }
+  } else {
+    hueAcc+=togaHueRate(gHueSpeed)*frameDt; if(hueAcc>=256.0f)hueAcc-=256.0f; gHueAuto=(uint8_t)hueAcc;
+  }
+  prevHueSpeed=gHueSpeed;
 
   // ── Broadcast our absolute state every 200ms ──
   // The controller uses it to drive its meters; the modules mirror it wholesale.
@@ -673,26 +815,31 @@ void loop() {
     sync.strobeGapMs      = cfg.strobeGapMs;
     sync.strobeOnMs       = cfg.strobeOnMs;        // mode/castle-strobe on/off — modules mirror these (v6)
     sync.strobeOffMs      = cfg.strobeOffMs;       // so they flash the SAME rhythm as the wall, any strip length
+    sync.coverage         = gCoverage;             // live lit-LED fraction — FOLLOW modules match their ratio (v9)
     sync.beatMs           = (uint16_t)lroundf(bPeriod);     // live tempo, not the saved one
     // The phase we are RENDERING, latency compensation already folded in — so a
     // module lands on the same brightness as the grid without redoing the maths.
     sync.beatPhase        = (uint8_t)(beatPhase(t)*255.0f);
-    CRGB tc=CRGB(CHSV((uint8_t)(gHueBase+gHueAuto),255,220));   // exact tint colour (rainbow map + auto)
+    CRGB tc=CRGB(CHSV(gFrameHue,255,220));   // dominant colour actually on the wall this frame (rotation already folded in)
     sync.tintR=tc.r; sync.tintG=tc.g; sync.tintB=tc.b;
     CRGB sc=(gStrobeHue==0)?CRGB(200,200,200):CRGB(CHSV(gStrobeHue,255,220));
     sync.sColR=sc.r; sync.sColG=sc.g; sync.sColB=sc.b;
     sync.animIndex        = (int16_t)cfg.animIndex;
-    sync.animSpeed        = cfg.animSpeed;
+    sync.animSpeed        = animSpeed;               // swept value while sweeping → modules sweep in lockstep
+    sync.modeFactor       = cfg.modeFactor[cfg.animIndex];   // controller blinks +/- when this mode's factor is maxed
+    sync.strobeSpeed      = cfg.strobeSpeed;                  // controller's strobe-speed meter / at-limit
+    sync.autoDwellS       = cfg.autoDwellS;                   // web UI echoes these back for display
+    sync.sweepPeriodS     = cfg.sweepPeriodS;
     esp_now_send(TOGA_BCAST,(const uint8_t*)&sync,sizeof(sync));
   }
 
   // ── Strobe rendering (overrides blackout while held) ─
   if(strobeActive){
-    // Short fixed flash, user-tunable gap (hold 15 + press +/-). The period is
-    // exactly STROBE_FLASH_MS+gap on an absolute grid, so a slow FastLED.show()
-    // cannot stretch it — see togaStrobeOn() in <toga_proto.h>. Redraw only on a
-    // state change: `want` is true for the whole flash window, not just its edge.
-    bool want = togaStrobeOn(t,strobeStart,cfg.strobeGapMs);
+    // Same on/off rhythm as the mode- and castle-strobe (one global strobe speed),
+    // on an absolute grid so a slow FastLED.show() cannot stretch it — see
+    // togaSquareOn() in <toga_proto.h>. Redraw only on a state change: `want` is
+    // true for the whole flash window, not just its edge.
+    bool want = togaSquareOn(t,strobeStart,cfg.strobeOnMs,cfg.strobeOffMs);
     if(want!=strobeOn){
       strobeOn=want;
       if(strobeOn){
@@ -714,36 +861,53 @@ void loop() {
   // Absolute-time gate (togaSquareOn), NOT a chained `flip = now + on`: a slow
   // FastLED.show() cannot stretch the period, so the wall and every module — of
   // any strip length — flash this in lockstep. See togaSquareOn() in <toga_proto.h>.
-  static bool     csHeldPrev=false; static uint32_t csStart=0;
+  static bool     csHeldPrev=false; static uint32_t csStart=0; static bool csOnPrev=false;
   bool castleHeld = senderAlive && espCastleStrobe;
-  if(castleHeld && !csHeldPrev) csStart=t;                 // phase origin: this press began here
+  if(castleHeld && !csHeldPrev){ csStart=t; csOnPrev=false; }  // phase origin + force first paint
   csHeldPrev = castleHeld;
   if(castleHeld){
+    // Redraw ONLY on an on/off edge (like button-15). Running at full loop rate
+    // now (cap bypassed above), a redraw-every-loop would spam FastLED.show();
+    // the edge gate keeps the rhythm crisp and the load flat on every mode.
     bool csOn = togaSquareOn(t, csStart, cfg.strobeOnMs, cfg.strobeOffMs);
-    FastLED.setBrightness(cfg.strobeBrightness);
-    clearFrame();
-    if(csOn){
-      drawText1Centered("CASTLE",2,CRGB(CHSV(160,235,235)));   // upper line
-      drawText1Centered("2026",  7,CRGB(CHSV( 35,235,235)));   // lower line
+    if(csOn != csOnPrev){
+      csOnPrev = csOn;
+      FastLED.setBrightness(cfg.strobeBrightness);
+      clearFrame();
+      if(csOn){
+        drawText1Centered("CASTLE",2,CRGB(CHSV(160,235,235)));   // upper line
+        drawText1Centered("2026",  7,CRGB(CHSV( 35,235,235)));   // lower line
+      }
+      FastLED.show();
     }
-    FastLED.show();
     return;
   }
 
   // ── Mode strobe: flash the CURRENT animation on/off, a bit brighter (button 14) ──
   // Absolute-time gate like the castle-strobe above — same length-independence.
-  static bool     msHeldPrev=false; static uint32_t msStart=0;
+  static bool     msHeldPrev=false; static uint32_t msStart=0; static bool msOnPrev=false;
   bool modeStrobeHeld = senderAlive && espModeStrobe;
-  if(modeStrobeHeld && !msHeldPrev) msStart=t;   // phase origin: this press began here
+  if(modeStrobeHeld && !msHeldPrev){ msStart=t; msOnPrev=false; }  // phase origin + force first ON paint
   msHeldPrev = modeStrobeHeld;
   if(modeStrobeHeld){
     bool msOn = togaSquareOn(t, msStart, cfg.strobeOnMs, cfg.strobeOffMs);
-    if(!msOn){                                   // off phase → dark
-      FastLED.clear();
-      for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
-      FastLED.show();
+    if(!msOn){                                   // OFF window → dark, blank once on the edge, then hold
+      if(msOnPrev){
+        FastLED.clear();
+        for(int e=0;e<NUM_ELEC;e++){ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;}
+        FastLED.show();
+        msOnPrev=false;
+      }
       return;
     }
+    // ON window: render the LIVE animation exactly ONCE per flash (at the edge),
+    // then hold that frame. A heavy mode re-rendered every loop stretched its own
+    // flash and bogged the controller, so the SAME strobe ran slower on heavier
+    // modes. virtualT keeps advancing between flashes, so the held image is still
+    // fresh; togaSquareOn keeps the rhythm absolute and uniform across all modes.
+    if(msOnPrev) return;    // already painted this ON window → hold it
+    msOnPrev=true;
+    // fall through once to the animation switch below (brighter; see gBaseBri)
   }
 
   // ── Blackout: the wall goes dark, but the mode keeps evolving underneath
@@ -759,13 +923,19 @@ void loop() {
     return;
   }
 
-  // ── Spot tunnel: while the moving-spot key (phys 5, TOGA_F_SPOT) is held, the
-  //    wall drives through a tunnel of square frames growing centre → rim, in
-  //    time with the dots the modules are chasing down their strips. Sits below
-  //    blackout so a dark wall still wins; the underlying mode keeps evolving
-  //    (virtualT already advanced), so releasing snaps back to it. Real-time
-  //    clock inside, so the drive looks the same at any Speed.
-  if(senderAlive && espSpot){
+  // ── Spot tunnel (phys 5, TOGA_F_SPOT). TAP vs HOLD:
+  //    · a short TAP shoots the spot ONLY on the modules — the wall stays on its
+  //      current mode (grid untouched).
+  //    · HOLDING (≥ SPOT_HOLD_MS) additionally drives the wall through a tunnel of
+  //      square frames growing centre → rim, in time with the module dots.
+  //    So the grid only joins in once the key is genuinely held. Sits below
+  //    blackout; the underlying mode keeps evolving (virtualT already advanced),
+  //    so releasing snaps back to it. Real-time clock inside → same drive at any Speed.
+  #define SPOT_HOLD_MS 350
+  static uint32_t spotDownAt=0; static bool spotWasDown=false;
+  if(espSpot && !spotWasDown) spotDownAt=t;            // rising edge → start the hold timer
+  spotWasDown = espSpot;
+  if(senderAlive && espSpot && (t-spotDownAt)>=SPOT_HOLD_MS){
     gBaseBri = cfg.brightness;      // showGrid() scales this by the AGC gain
     anim_spotTunnel(t);
     return;
@@ -781,7 +951,7 @@ void loop() {
     case 1:  anim_heartbeat(at);           break;
     case 2:  anim_binaryRain(at,dt);       break;
     case 3:  anim_vortex(at);              break;
-    case 4:  anim_earthquake(t);           break;
+    case 4:  anim_earthquake(at);          break;   // scaled time → Speed knob now works
     case 5:  anim_supernova(at);           break;
     case 6:  anim_blackHole(at);           break;
     case 7:  anim_wormhole(at);            break;
@@ -807,7 +977,7 @@ void loop() {
     case 27: anim_strangeAttractor(at,dt); break;
     case 28: anim_harmonicResonance(at,dt);break;
     case 29: anim_snake(at,dt);            break;
-    case 30: anim_iconShow(at);            break;
+    case 30: anim_tetris(at,dt);           break;
     case 31: anim_bouncingLogo(at,dt);     break;
     case 32: anim_starTunnel3D(at,dt);     break;
     case 33: anim_rippleRain(at,dt);       break;
@@ -825,7 +995,7 @@ void loop() {
     case 45: anim_blackHole2(at);          break;
     case 46: anim_pulsar2(at);             break;
     case 47: anim_horsehead(at);           break;
-    case 48: anim_earthWindow(at);         break;
+    case 48: anim_auroraCurtains(at,dt);   break;   // was earthWindow (deleted) → new energy mode
     case 49: anim_radar(at);               break;
     case 50: anim_sineWaves(at);           break;
     case 51: anim_rocketFire(at);          break;
@@ -844,6 +1014,11 @@ void loop() {
     case 64: anim_vuGrid(at);              break;
     case 65: anim_superHexagon(at);        break;
     case 66: anim_squareImplode(at);       break;
+    case 67: anim_plasmaLightning(at,dt);  break;
+    case 68: anim_neonShockwaves(at,dt);   break;   // new
+    case 69: anim_emberVortex(at,dt);      break;   // new
+    case 70: anim_prismShards(at,dt);      break;   // new
+    case 71: anim_nebulaBreath(at,dt);     break;   // new
   }
 
   // ── Mode-change readout ──

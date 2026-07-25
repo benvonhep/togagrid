@@ -31,7 +31,7 @@
 #define TOGA_OTA_PORT 3232
 
 // Hostnames must be unique per board, or mDNS collides and espota silently
-// flashes the wrong one. Grid/controller/webserver are singletons and get fixed
+// flashes the wrong one. Grid and controller are singletons and get fixed
 // names; a module is one of N, so it wears the last three bytes of its own MAC —
 // the identity it already announces in its hello and shows on the web UI.
 static inline const char* togaOtaModuleHost(){

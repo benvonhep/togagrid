@@ -32,7 +32,8 @@
 // one in. SSID must be space-free (the serial parser splits on whitespace).
 #define TOGA_HOTSPOT_SSID "togalights"
 #define TOGA_HOTSPOT_PASS "andmagic"   // set your phone hotspot to this (>=8 chars); override per board with serial `hotspot`
-#define TOGA_FALLBACK_MS  30000    // look for the controller this long before falling back
+#define TOGA_FALLBACK_MS  10000    // look for the controller this long before falling back
+#define TOGA_FALLBACK_FLASH_MS 5000 // on entering fallback, flash the blue LED this long ("I'm at toga-mod.local now")
 
 // ── LED hardware ──
 #define LED_TYPE    WS2812B

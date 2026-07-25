@@ -95,6 +95,51 @@ void tetNew(){
   if(!tetFitsCells(cells,tetR,tetC)) for(int a=0;a<11;a++) for(int b=0;b<11;b++) tetB[a][b]=0; // full → restart
   tetPlan();
 }
+void anim_tetris(uint32_t at,float dt){
+  if(!tetInit){ for(int a=0;a<11;a++) for(int b=0;b<11;b++) tetB[a][b]=0; tetStep=at; tetInit=true; tetClearing=false; tetNew(); }
+  if(tetClearing){                                     // full rows flash twice, then clear
+    if(at-tetFlashT>=170){
+      tetFlashT=at;
+      if(tetFlashCnt>0) tetFlashCnt--;
+      if(tetFlashCnt==0){
+        for(int r=10;r>=0;r--){ bool full=true; for(int c=0;c<11;c++) if(!tetB[r][c]) full=false;
+          if(full){ for(int rr=r;rr>0;rr--) for(int c=0;c<11;c++) tetB[rr][c]=tetB[rr-1][c];
+                    for(int c=0;c<11;c++) tetB[0][c]=0; r++; } }
+        tetClearing=false; tetNew();
+      }
+    }
+  } else if(at-tetStep>=300){                           // slow, deliberate play
+    tetStep=at;
+    int8_t cur[4][2]; tetCells(tetShape,tetRot,cur);
+    if(tetRot!=tetTargetRot){                           // 1) turn the piece
+      int nr=(tetRot+1)&3; int8_t rc[4][2]; tetCells(tetShape,nr,rc);
+      if(tetFitsCells(rc,tetR,tetC)) tetRot=nr;
+      else if(tetFitsCells(rc,tetR,tetC-1)){ tetRot=nr; tetC--; }
+      else if(tetFitsCells(rc,tetR,tetC+1)){ tetRot=nr; tetC++; }
+      else tetTargetRot=tetRot;
+    } else if(tetC!=tetTargetCol){                       // 2) slide toward target column
+      int dir=tetTargetCol>tetC?1:-1; int8_t rc[4][2]; tetCells(tetShape,tetRot,rc);
+      if(tetFitsCells(rc,tetR,tetC+dir)) tetC+=dir; else tetTargetCol=tetC;
+    } else if(tetFitsCells(cur,tetR+1,tetC)){            // 3) fall
+      tetR++;
+    } else {                                            // lock; if rows completed, start the flash
+      for(int i=0;i<4;i++){ int rr=tetR+cur[i][0],cc=tetC+cur[i][1]; if(rr>=0&&rr<=10&&cc>=0&&cc<=10) tetB[rr][cc]=tetHue; }
+      bool any=false;
+      for(int r=0;r<11;r++){ bool full=true; for(int c=0;c<11;c++) if(!tetB[r][c]) full=false; tetFull[r]=full; if(full) any=true; }
+      if(any){ tetClearing=true; tetFlashCnt=4; tetFlashT=at; }   // 4 toggles → two white flashes
+      else tetNew();
+    }
+  }
+  clearFrame();
+  for(int r=0;r<11;r++) for(int c=0;c<11;c++) if(tetB[r][c]) fillCell(r,c,CRGB(CHSV(tetB[r][c],220,160)));
+  if(tetClearing){
+    if(tetFlashCnt&1) for(int r=0;r<11;r++) if(tetFull[r]) for(int c=0;c<11;c++) fillCell(r,c,CRGB(255,255,255));
+  } else {
+    int8_t cur[4][2]; tetCells(tetShape,tetRot,cur);
+    for(int i=0;i<4;i++){ int rr=tetR+cur[i][0], cc=tetC+cur[i][1]; if(rr>=0) fillCell(rr,cc,CRGB(CHSV(tetHue,255,235))); }
+  }
+  showGrid();
+}
 
 // ═══════════ 40. SNAKE (self-playing) ═══════════
 bool snakeInit=false;
@@ -148,19 +193,6 @@ void anim_snake(uint32_t at,float dt){
     uint8_t v=(i==0)?255:(uint8_t)(90+120.0f*(1.0f-(float)i/snLen));
     fillCell(snR[i],snC[i],CRGB(CHSV(96,i==0?160:220,v)));  // body = green
   }
-  showGrid();
-}
-
-// ═══════════ 41. ICON SHOW ═══════════
-void anim_iconShow(uint32_t at){
-  const uint32_t per=2600;
-  int idx=(at/per)%NUM_ICONS;
-  uint32_t ph=at%per;
-  float env = (ph<400)?ph/400.0f : (ph>per-500)?(per-ph)/500.0f : 1.0f;
-  uint8_t val=(uint8_t)constrain(env*230.0f,0.0f,230.0f);
-  uint8_t hue=(uint8_t)(at/22);
-  clearFrame();
-  if(val>4) drawIcon(ICONS[idx],hotColor(env,hue,14));
   showGrid();
 }
 

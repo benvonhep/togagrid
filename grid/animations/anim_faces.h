@@ -114,10 +114,13 @@ void anim_stickman(uint32_t at,float dt){
   for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ rnObsX[i]-=0.006f*dt; if(rnObsX[i]<-2.0f) rnObsOn[i]=false; }
   if(at-rnSpawn>1500){ rnSpawn=at;
     for(int i=0;i<RUN_OBS;i++) if(!rnObsOn[i]){ rnObsX[i]=12.0f; rnObsType[i]=random(4); rnObsOn[i]=true; break; } }
-  // ── parabolic HOP that clears the obstacle: trigger so the apex lands as the
-  //    obstacle passes the runner, so the whole body arcs up and over it ──
-  const float JUMP_DUR=560.0f, JUMP_PEAK=4.7f;                     // ms / cells cleared
-  if(!rnJumping) for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ float d=rnObsX[i]-RX; if(d>1.2f&&d<1.8f){ rnJumping=true; rnJumpU=0.0f; break; } }
+  // ── parabolic HOP that clears the obstacle and lands centred in the GAP ──
+  //    Obstacles move 0.006 cells/ms. Trigger distance ≈ speed*JUMP_DUR/2 so the
+  //    apex coincides with the obstacle passing the runner, and the taller/longer
+  //    arc keeps a clear margin from the obstacle: at touch-down the obstacle is
+  //    already >2 cells to the left (well inside the free space between two).
+  const float JUMP_DUR=700.0f, JUMP_PEAK=5.2f;                     // ms / cells cleared
+  if(!rnJumping) for(int i=0;i<RUN_OBS;i++) if(rnObsOn[i]){ float d=rnObsX[i]-RX; if(d>1.6f&&d<2.3f){ rnJumping=true; rnJumpU=0.0f; break; } }
   if(rnJumping){ rnJumpU+=dt/JUMP_DUR; if(rnJumpU>=1.0f){ rnJumpU=1.0f; rnJumping=false; } }
   float jh=JUMP_PEAK*4.0f*rnJumpU*(1.0f-rnJumpU);                  // 0 at ends, JUMP_PEAK at apex
   int F=GND-(int)(jh+0.5f);                     // feet node (whole figure rises with the hop)
@@ -209,7 +212,7 @@ void anim_smiley(uint32_t at){
   CRGB eyeCol  = CRGB(255,238,205);              // soft warm white (the moving pupil)
   CRGB socket  = CRGB(CHSV(38,240,70));          // faint amber eye-socket glow
   CRGB cheek   = CRGB(CHSV(20,235,55));          // subtle warm blush accent
-  CRGB mthCol  = CRGB(CHSV(20,225,195));          // soft coral smile
+  CRGB mthCol  = CRGB(CHSV(0,240,215));           // bright RED mouth — clearly distinct from the amber face
 
   // face outline — smooth glowing ring
   fxRing(0.0f,0.0f,42.0f,2.4f,3.2f,faceCol);
@@ -258,19 +261,26 @@ bool eyePixel(float x,float y,float gx,float gy,float bp,CRGB &out){
   float dome=0.40f+0.60f*sqrtf(constrain(1.0f-e,0.0f,1.0f));    // eyeball curvature falloff
   float hx=x+12.0f, hy=y+12.0f;                                 // specular near the upper-left
   float spec=constrain(1.0f-sqrtf(hx*hx+hy*hy)/12.0f,0.0f,1.0f); spec*=spec;
-  float shade=constrain(dome+spec*0.55f,0.0f,1.0f);
   float dg=sqrtf((x-gx)*(x-gx)+(y-gy)*(y-gy));
   float irisF=constrain((RI-dg)/2.5f,0.0f,1.0f);               // crisper iris edge → more contrast
   float pupF =constrain((RP-dg)/2.5f,0.0f,1.0f);
-  float wF=fmaxf(outF*0.5f, scl);
+  float wF=fmaxf(outF, scl);
   if(wF<0.02f && vis<0.02f) return false;
-  float sv=fmaxf(outF*0.5f, scl*shade);                        // shaded sclera / contour value
-  CRGB c((uint8_t)(sv*205.0f),(uint8_t)(sv*202.0f),(uint8_t)(sv*175.0f));   // warm-white, shaded
+  // ── sclera WHITE: brightest at the domed CENTRE (dome≈1), dimming toward the
+  //    contour (dome→0.40 at the rim); a faint upper-left catch-light on top ──
+  float scv=constrain(scl*dome,0.0f,1.0f);
+  CRGB c((uint8_t)(scv*175.0f),(uint8_t)(scv*172.0f),(uint8_t)(scv*150.0f));   // warm white
+  c.r=qadd8(c.r,(uint8_t)(scl*spec*70.0f)); c.g=qadd8(c.g,(uint8_t)(scl*spec*70.0f)); c.b=qadd8(c.b,(uint8_t)(scl*spec*55.0f));
+  // ── CONTOUR: luminous azure rim, strongly distinct from AND brighter than the
+  //    white (peak 255 vs white ~175); lerped in so it dominates the outline ──
+  float of=constrain(outF,0.0f,1.0f);
+  CRGB rim(70,150,255);
+  c.r=(uint8_t)(c.r*(1.0f-of)+rim.r*of); c.g=(uint8_t)(c.g*(1.0f-of)+rim.g*of); c.b=(uint8_t)(c.b*(1.0f-of)+rim.b*of);
   // Iris REPLACES the sclera (lerp, not additive) so its saturated colour keeps
   // full contrast against the white instead of washing out; pupil darkens centre.
   if(irisF>0.001f && vis>0.001f){
-    float ishade=0.45f+0.55f*constrain((RI-dg)/RI,0.0f,1.0f);   // subtle shading across the iris
-    CRGB iris=CRGB(0,170,120); iris.nscale8_video((uint8_t)(ishade*255.0f));  // rich emerald-teal
+    float ishade=0.70f+0.30f*constrain((RI-dg)/RI,0.0f,1.0f);   // bright, flat shading so the iris reads > white
+    CRGB iris=CRGB(20,230,175); iris.nscale8_video((uint8_t)(ishade*255.0f));  // bright emerald-teal (>white)
     float mix=irisF*vis;
     c.r=(uint8_t)(c.r*(1.0f-mix)+iris.r*mix);
     c.g=(uint8_t)(c.g*(1.0f-mix)+iris.g*mix);

@@ -1,15 +1,17 @@
 // ══════════════════════════════════════════════════════════════
-//  module_effects.h — 90 resolution-independent 1D modes.
+//  module_effects.h — 68 resolution-independent 1D modes (one per grid anim).
 //  (#included by module.ino after the globals; do not compile alone.)
 //
-//  A module in FOLLOW mode renders module mode k for grid mode k (0..89),
-//  1:1. Each mode is a self-contained PROCEDURAL 1D animation — never a
+//  A module in FOLLOW mode renders module mode k for grid mode k (0..67),
+//  1:1 — MODE_TABLE is kept in the EXACT order of the grid's animation switch,
+//  so row k always cites the animation the wall is actually running. Each mode
+//  is a self-contained PROCEDURAL 1D animation — never a
 //  downsample of the grid's framebuffer (there are no pixels on the wire).
 //  Visual identity with the 2D grid is impossible and not the goal; a
 //  recognisable CITATION is: matching motion, direction, symmetry, rhythm,
 //  colour family and density.
 //
-//  Architecture: 24 parametrised archetype renderers + a MODE_TABLE[90]
+//  Architecture: 24 parametrised archetype renderers + a MODE_TABLE[68]
 //  assigning one archetype + params to each grid mode.
 //
 //  RESOLUTION INDEPENDENCE (every archetype, no exceptions):
@@ -57,100 +59,149 @@ struct ModeSpec {
   uint8_t p1, p2;   // archetype-specific
 };
 
-// Authoritative 90-entry mapping. Names in the trailing comment are the grid's
-// animation at that index (index 39 renders plasmaLightning — grid's
-// anim_agentField is an alias for it). PROGMEM: read one row per frame.
-static const ModeSpec MODE_TABLE[90] PROGMEM = {
-  /* 0 setupGrid       */ { A_BLINK,     0,  0, 100,  0, 0,               0, 3 },
-  /* 1 heartbeat       */ { A_PULSE,     0,255, 180,  0, FLAG_SYM,       40, 2 },
-  /* 2 binaryRain      */ { A_RAIN,     96,220, 120, 80, FLAG_SPARKLE,   60,40 },
-  /* 3 tectonic        */ { A_QUAKE,    20,200,  45,  0, 0,              12,25 },
-  /* 4 vortex          */ { A_WAVE,    180,220, 165,  0, 0,               0, 3 },
-  /* 5 earthquake      */ { A_QUAKE,    25,200, 100,  0, 0,              30,70 },
-  /* 6 dnaHelix        */ { A_WAVE,    130,240, 105,  0, 0,               0, 2 },
-  /* 7 supernova       */ { A_BURST,    20,200, 100,  0, FLAG_SYM,      200,20 },
-  /* 8 blackHole       */ { A_GRADIENT, 20,255, 190,  0, FLAG_SYM,       80, 0 },
-  /* 9 wormhole        */ { A_PULSE,   190,240, 250,  0, FLAG_SYM|FLAG_REVERSE, 60,3 },
-  /*10 mitosis         */ { A_PULSE,    85,200,  17,  0, FLAG_SYM,       50, 2 },
-  /*11 collider        */ { A_COLLIDE, 130,255,  46,  0, 0,               0, 0 },
-  /*12 shockwaveChain  */ { A_PULSE,   200,220,  90,  0, 0,              40, 4 },
-  /*13 pulsar          */ { A_SWEEP,   150,200, 250,  0, 0,              30,60 },
-  /*14 liquidMetal     */ { A_WAVE,     20,220,  50,  0, 0,               0, 2 },
-  /*15 iceCrown        */ { A_CHASE,   160,200,   8,  0, 0,              40,20 },
-  /*16 coriolisStorm   */ { A_WAVE,    148,255,  80,  0, FLAG_SYM,        0, 5 },
-  /*17 crystalFracture */ { A_FLASH,   158,250, 100,  0, 0,              30,60 },
-  /*18 aurora          */ { A_NOISE,   120,200,  60,  0, 0,              40,18 },
-  /*19 lavaLamp        */ { A_PLASMA,   10,230,  40,  0, 0,              40,60 },
-  /*20 nerveSystem     */ { A_COMET,   255,220, 220,  4, 0,              60, 1 },
-  /*21 gravityLens     */ { A_WAVE,    180,220,   8,  0, 0,               0, 2 },
-  /*22 tidalWave       */ { A_WAVE,    150,230,  21,  0, 0,               0, 3 },
-  /*23 cymatics        */ { A_STRIPES,  60,220, 100,  0, 0,              80,40 },
-  /*24 starfieldWarp   */ { A_RAIN,    200,180, 217, 50, FLAG_SYM,       50,30 },
-  /*25 darkMatter      */ { A_NOISE,   200,240,  50,  0, FLAG_DIM,       40,20 },
-  /*26 concentricSq    */ { A_PULSE,   120,220,  90,  0, FLAG_SYM,       40, 4 },
-  /*27 squareRain      */ { A_TWINKLE, 255,220, 100, 60, 0,              40,180},
-  /*28 diamondPulse    */ { A_PULSE,   150,230, 250,  0, FLAG_SYM,       40, 3 },
-  /*29 checkerboard    */ { A_STRIPES, 120,230,  20,  0, 0,             120,50 },
-  /*30 rotatingCube    */ { A_SPIN,      0,220,  24,  0, 0,              60, 0 },
-  /*31 sunsetHorizon   */ { A_GRADIENT, 10,180,   8,  0, 0,             120, 0 },
-  /*32 depthMap        */ { A_GRADIENT,150,180,  33,  0, FLAG_SYM,       60, 0 },
-  /*33 cosmicDust      */ { A_NOISE,   200,210,  50,  0, 0,              50,10 },
-  /*34 heartglow       */ { A_PULSE,     5,255,  45,  0, FLAG_SYM,       60, 1 },
-  /*35 evolution       */ { A_PLASMA,  100,220,  56,  0, 0,              40,80 },
-  /*36 morph           */ { A_PLASMA,  150,210,  65,  0, 0,              40,80 },
-  /*37 strangeAttract  */ { A_COMET,    90,220, 220,  1, 0,              50, 0 },
-  /*38 harmonicReson   */ { A_PLASMA,  170,210,  83,  0, 0,              50,90 },
-  /*39 plasmaLightning */ { A_FLASH,   150,230, 110,  0, 0,              40,60 },
-  /*40 tetris          */ { A_BLOCKS,   96,220, 100,  0, 0,               8, 0 },
-  /*41 snake           */ { A_COMET,    96,220, 143,  1, 0,              40, 0 },
-  /*42 iconShow        */ { A_MARQUEE,  40,230, 150,  0, 0,              77, 8 },
-  /*43 bouncingLogo    */ { A_COMET,     0,230, 250,  1, 0,              30, 1 },
-  /*44 starTunnel3D    */ { A_RAIN,    200,160, 104, 50, FLAG_SYM,       40,20 },
-  /*45 rippleRain      */ { A_PULSE,   150,230, 135,  0, 0,              40, 3 },
-  /*46 spiralGalaxy    */ { A_WAVE,    200,210,  84,  0, FLAG_SYM,        0, 2 },
-  /*47 plasmaField     */ { A_PLASMA,    0,230,  79,  0, FLAG_RAINBOW,   40,255},
-  /*48 breatheGradient */ { A_GRADIENT,120,190,  57,  1, 0,             150, 0 },
-  /*49 boids           */ { A_SWARM,   110,220, 100, 12, 0,              40, 0 },
-  /*50 fireworks       */ { A_BURST,   255,230, 110,  0, 0,              40,14 },
-  /*51 reactionDiff    */ { A_NOISE,   180,200,  60,  0, 0,              45,20 },
-  /*52 textTOGA        */ { A_MARQUEE,  40,255,  90,  0, 0,              41, 6 },
-  /*53 textCASTLE      */ { A_MARQUEE, 140,255,  90,  0, 0,             113, 7 },
-  /*54 text2026        */ { A_MARQUEE, 210,255,  90,  0, 0,             205, 5 },
-  /*55 stickman        */ { A_CHASE,    35,180, 110,  0, 0,              50,10 },
-  /*56 paddleBall      */ { A_COMET,    40,220, 110,  1, 0,              25, 1 },
-  /*57 smiley          */ { A_BLINK,    45,235,  80,  0, 0,             800, 4 },
-  /*58 eye             */ { A_GAZE,    140,225,  90,  0, 0,               0, 0 },
-  /*59 starfield2      */ { A_TWINKLE, 170,180, 110, 50, FLAG_SYM,       40,150},
-  /*60 warp            */ { A_RAIN,    174,180, 150, 50, FLAG_SYM,       70,20 },
-  /*61 asteroids       */ { A_COMET,    20, 40,  15,  1, 0,              40, 0 },
-  /*62 shootingStars   */ { A_TWINKLE, 160,180, 120, 40, FLAG_SPARKLE,   30,120},
-  /*63 blackHole2      */ { A_PULSE,    28,255,  46,  0, FLAG_SYM|FLAG_DIM, 50,2 },
-  /*64 pulsar2         */ { A_SWEEP,   160,200,  57,  2, 0,              25,60 },
-  /*65 pulsarNebula    */ { A_SWEEP,   180,200,  48,  0, 0,              30,50 },
-  /*66 orionNebula     */ { A_NOISE,   180,190,  55,  0, FLAG_SPARKLE,   50,12 },
-  /*67 horsehead       */ { A_NOISE,    24,200,  50,  0, 0,              50,15 },
-  /*68 twinStars       */ { A_PULSE,    30,200,  37,  0, FLAG_SYM,       40, 2 },
-  /*69 planets         */ { A_SOLID,    20,255,  29,  0, 0,              80, 2 },
-  /*70 earthWindow     */ { A_NOISE,   100,220,  60,  0, 0,              50,20 },
-  /*71 shipPanel       */ { A_BLINK,     0,255,  90,  0, 0,             600, 6 },
-  /*72 radar           */ { A_SWEEP,    96,255,  37,  0, 0,              20,70 },
-  /*73 sineWaves       */ { A_WAVE,    150,220,  79,  0, 0,               0, 2 },
-  /*74 rocketFire      */ { A_FIRE,     45,255, 110,  0, FLAG_REVERSE,   60,120},
-  /*75 warningLight    */ { A_SWEEP,    20,255,  72,  0, 0,              40,50 },
-  /*76 aliens          */ { A_SWARM,    95,220,  90,  8, 0,              30,250},
-  /*77 spaceInvaders   */ { A_CHASE,   150,210,  25,  0, 0,              60,20 },
-  /*78 rain2           */ { A_RAIN,    150,120, 186, 50, 0,              40,30 },
-  /*79 levitate        */ { A_RAIN,     40, 90,  74, 40, FLAG_REVERSE,   50,40 },
-  /*80 confetti        */ { A_TWINKLE, 255,230, 100, 60, 0,              40,150},
-  /*81 spiralEject     */ { A_BURST,   180,220, 100,  0, FLAG_SYM,      100,16 },
-  /*82 clouds3d        */ { A_NOISE,   150,180,  45,  0, 0,              50,10 },
-  /*83 pulseHeart      */ { A_PULSE,     0,240, 100,  0, FLAG_SYM|FLAG_BEAT, 50,1 },
-  /*84 rainUp          */ { A_RAIN,    150,120, 186, 50, FLAG_REVERSE,   40,30 },
-  /*85 starsFlying     */ { A_TWINKLE, 160,180, 100, 50, 0,              40,120},
-  /*86 firework2       */ { A_BURST,   255,220, 100,  0, 0,             130,10 },
-  /*87 hStripesFlow    */ { A_STRIPES, 150,220, 250,  0, 0,              90,55 },
-  /*88 vuColumns       */ { A_VU,       96,255, 100,  0, FLAG_BEAT,       0,60 },
-  /*89 vuGrid          */ { A_VU,       96,255, 100,  0, FLAG_BEAT,       1,60 },
+// Authoritative mapping — ONE ROW PER GRID ANIMATION, in the EXACT order of the
+// grid's mode switch (grid.ino case 0..66). A module in FOLLOW mode renders row
+// k while the grid runs anim k, so the trailing name IS the grid function at
+// that index; MOD_MODE_COUNT must equal the grid's TOTAL_ANIMS. Each row is
+// tuned to CITE its animation on the four axes the eye reads across a 2D→1D gap:
+//   · COLOUR   — native hue family/saturation of the grid mode (both grid and
+//                module rotate output by the same gHueBase+gHueAuto, so a native
+//                hue here lands on the same wheel position the wall shows).
+//   · DENSITY  — on/off ratio: full-field grid modes use whole-strip archetypes
+//                (WAVE/PLASMA/NOISE/GRADIENT/VU), sparse ones use particle
+//                archetypes at a matching element count (RAIN/TWINKLE/COMET/BURST).
+//   · MOTION   — radial→SYM, inward→SYM|REVERSE, rotation→SPIN/SWEEP, linear→
+//                RAIN/CHASE/MARQUEE, explosive→BURST, chaotic→COMET/SWARM.
+//   · RHYTHM   — steady vs pulsing vs stochastic vs beat-locked, via speed/flags.
+// PROGMEM: read one row per frame.
+#define MOD_MODE_COUNT 72
+static const ModeSpec MODE_TABLE[MOD_MODE_COUNT] PROGMEM = {
+  /* 0 setupGrid       */ { A_BLINK,     0,  0, 100,  0, 0,                             0, 3 },  // static red/green lattice (special-cased in modRender)
+  /* 1 heartbeat       */ { A_PULSE,     0,255, 180,  0, FLAG_SYM,                     25, 4 },  // red double-thump rings from centre (more/wider rings, low-bri visible)
+  /* 2 binaryRain      */ { A_COMET,    96,220, 110,  3, FLAG_SPARKLE,                 60, 0 },  // green matrix comets falling (count fixed, LED-independent)
+  /* 3 vortex          */ { A_COMET,   190,220,  90,  3, FLAG_REVERSE,                 70, 0 },  // blue-purple flow outer→inner (END→START) like the grid spiral
+  /* 4 earthquake      */ { A_QUAKE,    25,200, 100,  0, 0,                            30,70 },  // amber seismic ripples + jolts
+  /* 5 supernova       */ { A_BURST,    15,200, 110,  0, FLAG_SYM,                    110,14 },  // red-white star blast + radial sparks from centre (fewer sparks)
+  /* 6 blackHole       */ { A_PLASMA,   30,230,  60,  0, 0,                            40,90 },  // 2-hue accretion gradient: amber outer → centre hue (span 90)
+  /* 7 wormhole        */ { A_PULSE,   200,240, 150,  0, FLAG_SYM|FLAG_REVERSE,        40, 4 },  // violet rings tunnelling inward
+  /* 8 mitosis         */ { A_PULSE,    90,200,  20,  0, FLAG_SYM,                     60, 2 },  // slow green cell split/breathe
+  /* 9 collider        */ { A_COLLIDE, 130,255,  46,  0, 0,                            0, 0 },   // two beams converge → flash
+  /*10 shockwaveChain  */ { A_COMET,   210,220,  90,  3, FLAG_SYM,                     80, 0 },  // blue-purple comet flow emanating from centre
+  /*11 pulsar          */ { A_SWEEP,   150,200, 220,  0, FLAG_SYM,                     40,60 },  // fast cyan beam radiating from the centre lamp
+  /*12 liquidMetal     */ { A_PLASMA,   20,170,  45,  0, 0,                            40,60 },  // slow desaturated molten-metal drift
+  /*13 coriolisStorm   */ { A_WAVE,    148,240,  80,  0, FLAG_SYM|FLAG_SPARKLE,          0, 5 },  // symmetric blue storm bands (bri/colour spread) + sparkle
+  /*14 aurora          */ { A_NOISE,    85,200,  55,  0, FLAG_RAINBOW,                 45,16 },  // green→magenta shimmering curtains
+  /*15 lavaLamp        */ { A_COMET,   255,230,  40,  3, FLAG_SYM,                    110, 1 },  // slow multicolour blobs drifting out/in toward centre (per-blob hue)
+  /*16 nerveSystem     */ { A_COMET,   255,220, 220,  6, 0,                            50, 1 },  // random synaptic sparks darting/bouncing
+  /*17 gravityLens     */ { A_WAVE,    180,220,  10,  0, 0,                             0, 3 },  // very slow blue warped field
+  /*18 cymatics        */ { A_VU,       60,220, 140,  0, 0,                             0,60 },  // fast sloshing level bar (accents, not all-on)
+  /*19 starfieldWarp   */ { A_COMET,   200,180, 180,  2, FLAG_SYM|FLAG_SPARKLE,        45, 0 },  // very few spark-tail points flying fore+aft from centre
+  /*20 concentricSquares*/{ A_BLOCKS,    0,220,  60,  0, FLAG_SYM|FLAG_RAINBOW,         6, 0 },  // blocky STEPPED rainbow rings reaching to the ends (not a smooth chase)
+  /*21 squareRain      */ { A_TWINKLE, 255,220,  20, 50, 0,                            40,220},  // near-static multicolour distribution (grid doesn't move → speed way down)
+  /*22 depthMap        */ { A_GRADIENT,  0,200,  30,  1, FLAG_SYM,                    160, 0 },  // radial red-centre → blue-edge, breathing
+  /*23 cosmicDust      */ { A_NOISE,   210,205,  45,  0, 0,                            50,10 },  // soft blue-purple nebula drift
+  /*24 heartglow       */ { A_PULSE,     5,255,  40,  0, FLAG_SYM,                     60, 1 },  // slow warm heartbeat glow in the dark
+  /*25 evolution       */ { A_PLASMA,  100,220,  50,  0, FLAG_SYM|FLAG_SPARKLE|FLAG_DIM, 40,90 },  // central flowy flicker (dimmer, sparkle)
+  /*26 morph           */ { A_PLASMA,  150,210,  55,  0, FLAG_SYM|FLAG_SPARKLE|FLAG_DIM, 45,90 },  // central flowy flicker (dimmer, sparkle) — as mode 25
+  /*27 strangeAttractor*/ { A_COMET,    90,220, 180,  1, FLAG_SYM|FLAG_SPARKLE,        70, 0 },  // central chaotic comet + sparkle flicker
+  /*28 harmonicResonance*/{ A_PLASMA,  170,210,  80,  0, 0,                            50,90 },  // throbbing interference field
+  /*29 snake           */ { A_COMET,    96,220, 143,  1, 0,                            40, 0 },  // green worm head + trailing body
+  /*30 iconShow        */ { A_MARQUEE,  40,230,  60,  0, FLAG_RAINBOW,                 77, 8 },  // glowing emblem cells, hue cycling
+  /*31 bouncingLogo    */ { A_COMET,     0,230, 120,  1, 0,                            40, 1 },  // slow bouncing logo dot
+  /*32 starTunnel3D    */ { A_COMET,   160,170, 120,  3, FLAG_SYM,                     50, 0 },  // symmetric point-pairs held apart from centre (a cut through the squares)
+  /*33 rippleRain      */ { A_PULSE,   150,230, 110,  0, 0,                            40, 3 },  // raindrop rings expanding
+  /*34 spiralGalaxy    */ { A_SPIN,    165,200,  50,  0, 0,                           200, 0 },  // slow turning galaxy, blue→pink
+  /*35 boids           */ { A_SWARM,   110,220, 100, 12, 0,                            40, 0 },  // flocking swarm of firefly dots
+  /*36 fireworks       */ { A_BURST,   255,230, 110,  0, 0,                            40,14 },  // random colour bursts + fall
+  /*37 textTOGA        */ { A_MARQUEE,  40,255,  90,  0, 0,                            41, 6 },  // amber scrolling-text banner feel
+  /*38 stickman        */ { A_CHASE,    35,180, 110,  0, 0,                            50,10 },  // amber runner scrolling horizontally
+  /*39 paddleBall      */ { A_COMET,    40,220, 110,  1, 0,                            25, 1 },  // bouncing ball
+  /*40 smiley          */ { A_PULSE,    40,235,  40,  0, FLAG_SYM,                     60, 2 },  // gentle smooth warm glow from centre (no flashy blink)
+  /*41 eye             */ { A_GAZE,    112,225,  90,  0, 0,                             0, 0 },  // teal iris on cream, saccade + blink
+  /*42 starfield2      */ { A_COMET,   160,180, 110,  2, FLAG_SYM,                     50, 0 },  // very few sparks flying from centre outward both ways
+  /*43 warp            */ { A_COMET,   160,180, 150,  3, FLAG_SYM,                    120, 0 },  // long spark streaks flying outward from centre
+  /*44 shootingStars   */ { A_TWINKLE, 150,180, 110, 40, FLAG_SPARKLE,                 30,120},  // quiet blue twinkle field + meteors
+  /*45 blackHole2      */ { A_PLASMA,    0,230,  70,  0, FLAG_SYM,                     40,255},  // central-origin full-spectrum plasma
+  /*46 pulsar2         */ { A_SWEEP,   160,200,  57,  2, FLAG_SYM,                     25,60 },  // twin blue beams radiating from the centre
+  /*47 horsehead       */ { A_CHASE,    24,200,  80,  0, 0,                            45,25 },  // amber directional chase front→back (riding the river)
+  /*48 auroraCurtains  */ { A_WAVE,    110,210,  70,  0, FLAG_RAINBOW,                 50,10 },  // flowing aurora colour bands (green→teal→magenta)
+  /*49 radar           */ { A_SWEEP,    96,255,  37,  0, FLAG_SYM,                     20,70 },  // green radar sweep radiating from the centre
+  /*50 sineWaves       */ { A_WAVE,    150,220,  79,  0, 0,                             0, 3 },  // aqua interfering sine bands
+  /*51 rocketFire      */ { A_FIRE,     45,255, 110,  0, FLAG_REVERSE,                 60,120},  // roaring flame plume (downward)
+  /*52 warningLight    */ { A_SWEEP,    38,140,  72,  0, FLAG_SYM,                     40,50 },  // pale amber lighthouse beam from the centre lamp
+  /*53 aliens          */ { A_SWARM,    95,220,  90,  8, 0,                            30,200},  // green cartoon aliens hopping
+  /*54 rain2           */ { A_RAIN,    150,120, 150, 25, FLAG_DIM,                     45,30 },  // sparser dimmer real drops (not all-on)
+  /*55 levitate        */ { A_RAIN,     40, 90,  74, 22, FLAG_REVERSE|FLAG_DIM,        50,40 },  // sparser dimmer warm embers drifting up
+  /*56 confetti        */ { A_TWINKLE, 255,230, 100, 60, 0,                            40,150},  // festive multicolour confetti
+  /*57 spiralEject     */ { A_BURST,   180,220, 100,  0, FLAG_SYM,                    100,16 },  // purple spinning galaxy flinging sparks
+  /*58 clouds3d        */ { A_NOISE,   150,180,  45,  0, FLAG_SPARKLE,                 50,10 },  // drifting pale-blue haze + sparkle
+  /*59 pulseHeart      */ { A_PULSE,     0,240, 100,  0, FLAG_SYM|FLAG_BEAT,           50, 1 },  // beating red heart (beat-locked)
+  /*60 rainUp          */ { A_COMET,   150,120, 150,  3, FLAG_REVERSE|FLAG_SPARKLE,    60, 0 },  // sparkly upward comets rising (fewer LEDs)
+  /*61 starsFlying     */ { A_TWINKLE, 160,180, 100, 50, 0,                            40,120},  // omnidirectional twinkling starfield
+  /*62 firework2       */ { A_BURST,   255,220, 100,  0, 0,                           130,10 },  // launching + bursting fireworks
+  /*63 vuColumns       */ { A_VU,       96,255, 100,  0, FLAG_BEAT,                     0,60 },  // green→red VU bars (beat-locked)
+  /*64 vuGrid          */ { A_VU,       96,255, 100,  0, FLAG_BEAT,                     1,60 },  // dual-axis VU grid (beat-locked)
+  /*65 superHexagon    */ { A_PULSE,     0,220, 180,  0, FLAG_SYM|FLAG_REVERSE|FLAG_RAINBOW, 70, 6 },  // hex walls rushing inward, reaching further to the middle
+  /*66 squareImplode   */ { A_BLOCKS,    0,220,  90,  0, FLAG_SYM|FLAG_REVERSE|FLAG_RAINBOW,  6, 0 },  // blocky STEPPED implode (not a smooth chase)
+  /*67 plasmaLightning */ { A_BLOCKS,  150,230, 110,  0, 0,                             6, 0 },  // blocky blue stepping (less sparky)
+  /*68 neonShockwaves  */ { A_BURST,   190,255, 120,  0, FLAG_SYM,                    100,14 },  // colliding neon rings from the centre
+  /*69 emberVortex     */ { A_SPIN,     18,240, 100,  0, 0,                            40,60 },  // swirling fire/ember vortex
+  /*70 prismShards     */ { A_BURST,     0,220, 100,  0, FLAG_SYM|FLAG_RAINBOW,       100,16 },  // rainbow crystal shards explode/reassemble
+  /*71 nebulaBreath    */ { A_NOISE,   200,180,  30,  0, FLAG_SPARKLE,                 55,10 },  // breathing deep-space nebula + stars
+};
+
+// ══════════════════════════════════════════════════════════════
+//  LOCAL (independent) modes — v10. Rendered when a module is NOT following the
+//  grid (effectPin != FOLLOW). Purpose-built to look good on ONE strip: the
+//  first six wear a FIXED colour (native hue 0, so showModule's local-hue
+//  rotation paints them the picked colour) and pulsate/fade; the last four are
+//  self-cycling RAINBOW modes that sweep the wheel on their own clock. Simple,
+//  not a citation of any grid mode. The order MUST match togaLocalEffectName()
+//  in toga_proto.h row-for-row (index k ⇄ TOGA_EFFECT_LOCAL_BASE + k).
+//   arch          hue sat  spd dens flags                p1   p2
+static const ModeSpec LOCAL_MODES[TOGA_LOCAL_COUNT] PROGMEM = {
+  /* 0 Solid       */ { A_SOLID,    0,255, 100,  0, 0,                      0,   0 },  // steady fixed colour
+  /* 1 Atmen       */ { A_SOLID,    0,255,  36,  0, 0,                    210,   0 },  // slow breathe: pulsate + fade in colour
+  /* 2 Puls        */ { A_PULSE,    0,255,  90,  0, FLAG_SYM,             45,   3 },  // rings swelling out from centre, fading
+  /* 3 Komet       */ { A_COMET,    0,230, 120,  1, 0,                     55,   0 },  // one head gliding, soft fading tail
+  /* 4 Funkeln     */ { A_TWINKLE,  0,210, 100, 55, 0,                     40, 150 },  // sparse sparkles fading in the colour
+  /* 5 Feuer       */ { A_FIRE,    45,255, 110,  0, 0,                     60, 120 },  // warm flame flicker (tints with colour)
+  /* 6 Regenbogen  */ { A_GRADIENT, 0,255,  55,  0, 0,                      0,   0 },  // whole strip one hue, cycling the wheel
+  /* 7 Rb-Fluss    */ { A_GRADIENT, 0,255,  70,  0, 0,                    255,   0 },  // full rainbow flowing along the strip
+  /* 8 Rb-Plasma   */ { A_PLASMA,   0,220,  55,  0, 0,                     40, 255 },  // soft full-spectrum plasma drift
+  /* 9 Rb-Funkeln  */ { A_TWINKLE, 255,230, 100, 60, 0,                     40, 150 },  // multicolour confetti sparkles
+  /*10 Fließen     */ { A_WAVE,     0,255,  79,  0, 0,                      0,   3 },  // smooth bright bands flowing along the strip (floor dir)
+  /*11 Lauflicht   */ { A_CHASE,    0,255, 110,  0, 0,                     50,  10 },  // running dots chasing down the strip (floor dir)
+};
+
+// Local effects whose motion has a clear direction along the strip → the floor
+// setting (▶/◀) flips them. The rest (Solid/Atmen/Puls/Funkeln/Feuer/plasma) have
+// no meaningful travel direction and are left alone. Applied after render below.
+static inline bool localIsDirectional(uint8_t idx){
+  return idx == 3 || idx == 7 || idx == 10 || idx == 11;   // Komet, Rb-Fluss, Fließen, Lauflicht
+}
+// Mirror the rendered frame across the strip centre (per column, so panels flip too).
+// A spatial reflection reverses apparent travel direction without touching any
+// archetype's internals — one place to honour the floor direction for every effect.
+static void modMirrorX(){
+  for(uint16_t c = 0; c < gWidth / 2; c++){
+    uint16_t c2 = gWidth - 1 - c;
+    for(uint16_t y = 0; y < gHeight; y++){ CRGB t = ledXY(c, y); ledXY(c, y) = ledXY(c2, y); ledXY(c2, y) = t; }
+  }
+}
+
+// Dance auto-programs (v10): each cycles a curated list of LOCAL_MODES indices,
+// one every AUTO_DWELL_MS of VIRTUAL time (Speed scales it). Order matches
+// togaAutoProgName(): 0 Mix, 1 Farbe (fixed-colour fades), 2 Regenbogen.
+#define AUTO_DWELL_MS  14000u
+static const uint8_t AUTO_MIX[]     = { 1, 2, 3, 4, 6, 7, 9, 8 };   // colour fades + rainbows
+static const uint8_t AUTO_COLOR[]   = { 1, 2, 3, 4 };               // pulsate/fade in the fixed colour
+static const uint8_t AUTO_RAINBOW[] = { 6, 7, 8, 9 };               // the rainbow modes
+struct AutoProg { const uint8_t* list; uint8_t len; };
+static const AutoProg AUTO_PROGS[TOGA_LOCAL_AUTO_COUNT] = {
+  { AUTO_MIX,     (uint8_t)(sizeof(AUTO_MIX))     },
+  { AUTO_COLOR,   (uint8_t)(sizeof(AUTO_COLOR))   },
+  { AUTO_RAINBOW, (uint8_t)(sizeof(AUTO_RAINBOW)) },
 };
 
 // ── Per-frame render state (set by modRender before dispatch) ──
@@ -719,8 +770,8 @@ static void archGaze(const ModeSpec& s, uint32_t t, uint16_t n){
 //    hues into fx just like the archetypes, so showModule tint/brightness/beat
 //    apply and panels render each as a moving vertical bar via modColRGB.
 #define MOD_MAX_SPOTS   6            // dots that can be in flight at once
-#define MOD_SPOT_PERIOD 1500u        // ms of virtual clock per full traversal
-#define MOD_SPOT_GAP    300u         // hold the key → a fresh dot every this many ms (a stream, not one)
+#define MOD_SPOT_PERIOD 900u         // ms of REAL time per full strip traversal (kept in step with grid anim_spotTunnel period)
+#define MOD_SPOT_GAP    260u         // hold the key → a fresh dot every this many ms (a stream, not one)
 
 static uint32_t gSpotStart[MOD_MAX_SPOTS];   // launch time (gVirtMs) per active dot
 static bool     gSpotOn[MOD_MAX_SPOTS] = { false };
@@ -762,42 +813,77 @@ bool renderSpots(uint32_t t){
     if(any) modWhole(CRGB(255, 255, 255), amp);
     return any;
   }
+  // Travel direction follows the floor setting: FWD (or unflagged) glides 0→end,
+  // REV glides end→0. The warm trail always sits BEHIND the head, so its offset
+  // flips with the direction.
+  bool rev = (gFloorFlow == TOGA_FLOOR_REV);
+  float td  = rev ? +1.0f : -1.0f;                    // trail offset (behind the head)
   for(int i = 0; i < MOD_MAX_SPOTS; i++){
     if(!gSpotOn[i]) continue;
     uint32_t age = t - gSpotStart[i];
-    float pos = (float)age / (float)MOD_SPOT_PERIOD * (float)(Mn - 1);
-    if(pos - 2.0f > (float)(Mn - 1)){ gSpotOn[i] = false; continue; }  // head + trail have exited
-    splatLed(pos,        CRGB(255, 255, 255), 1.0f);  // head
-    splatLed(pos - 1.0f, CRGB(255, 200, 120), 0.5f);  // trail
-    splatLed(pos - 2.0f, CRGB(255, 160,  80), 0.22f);
+    float travel = (float)age / (float)MOD_SPOT_PERIOD * (float)(Mn - 1);   // 0 → end over the pass
+    float pos    = rev ? (float)(Mn - 1) - travel : travel;
+    bool exited  = rev ? (pos + 2.0f < 0.0f) : (pos - 2.0f > (float)(Mn - 1));
+    if(exited){ gSpotOn[i] = false; continue; }        // head + trail have run off the end
+    splatLed(pos,             CRGB(255, 255, 255), 1.0f);   // head
+    splatLed(pos + td,        CRGB(255, 200, 120), 0.5f);   // trail
+    splatLed(pos + td * 2.0f, CRGB(255, 160,  80), 0.22f);
     any = true;
   }
   return any;
 }
 
 // ══════════════════════════════════════════════════════════════
+//  Coverage match (v9). Trim the module's lit fraction down to the grid's live
+//  coverage so "half the grid lit → half the strip lit". Operates per COLUMN (a
+//  strip is one column tall; a panel draws each column uniformly), keeping the
+//  brightest ceil(cov·width) columns and blacking the rest. It only ever REMOVES
+//  light: a render already sparser than the grid is left untouched — nothing is
+//  invented. Called from the FOLLOW render path after modRender().
+// ══════════════════════════════════════════════════════════════
+static inline uint8_t modColBriMax(int c){
+  uint8_t mx = 0;
+  for(uint16_t y = 0; y < gHeight; y++){ CRGB& p = ledXY(c, y);
+    uint8_t m = p.r > p.g ? (p.r > p.b ? p.r : p.b) : (p.g > p.b ? p.g : p.b);
+    if(m > mx) mx = m; }
+  return mx;
+}
+void modCoverGate(uint8_t cov){
+  if(cov >= 255) return;                                   // grid ~fully lit → keep everything
+  int w = gWidth ? gWidth : 1;
+  int target = (int)(((uint32_t)cov * (uint32_t)w + 127u) / 255u);   // columns to keep lit (rounded)
+  if(target <= 0){                                         // grid dark → blank the strip
+    for(int c = 0; c < w; c++) for(uint16_t y = 0; y < gHeight; y++) ledXY(c, y) = CRGB(0,0,0);
+    return;
+  }
+  uint16_t hist[256]; for(int b = 0; b < 256; b++) hist[b] = 0;
+  int litNow = 0;
+  for(int c = 0; c < w; c++){ uint8_t mx = modColBriMax(c); hist[mx]++; if(mx) litNow++; }
+  if(litNow <= target) return;                             // already sparse enough → leave as-is
+  int cum = 0, thr = 1;                                    // brightness cut so ~`target` columns survive
+  for(int b = 255; b >= 1; b--){ cum += hist[b]; if(cum >= target){ thr = b; break; } }
+  for(int c = 0; c < w; c++) if(modColBriMax(c) < thr)
+    for(uint16_t y = 0; y < gHeight; y++) ledXY(c, y) = CRGB(0,0,0);
+}
+
+// ══════════════════════════════════════════════════════════════
 //  Dispatch. Called once per frame with the virtual clock (gVirtMs). fx is
 //  cleared here; SYM is handled inside modPix/pForCol; SPARKLE is a post-pass.
 // ══════════════════════════════════════════════════════════════
-void modRender(uint16_t mode, uint32_t t, uint16_t n){
+
+// Per-frame preamble shared by the grid-mode and local-mode render paths: set the
+// column count and the speed-weighted dt (gDtV). Exactly ONE render entry runs per
+// frame, so lastT advances once and gDtV stays a true per-frame delta.
+static inline void modFrameBegin(uint32_t t){
   Mn = gWidth ? gWidth : 1;
   static uint32_t lastT = 0;
   gDtV = (uint32_t)(t - lastT); if(gDtV > 200u) gDtV = 200u; lastT = t;
-  gReset = (mode != gLastMode); gLastMode = mode; gCurMode = mode;
+}
 
-  fill_solid(fx, gNumLeds, CRGB::Black);
-  if(mode == TOGA_EFFECT_OFF || mode >= 90) return;      // OFF / out of range → black
-
-  ModeSpec s; memcpy_P(&s, &MODE_TABLE[mode], sizeof(s));
+// Run one ModeSpec into fx: sets Msym, dispatches to its archetype, overlays
+// sparkle. Shared by MODE_TABLE (grid citations) and LOCAL_MODES (independent).
+static void modDispatch(const ModeSpec& s, uint32_t t){
   Msym = (s.flags & FLAG_SYM) != 0;
-
-  if(mode == 0){                                          // setupGrid calibration (static)
-    modColRGB(0, 140, 0, 0);
-    if(Mn > 1) modColRGB(Mn - 1, 0, 140, 0);
-    modColRGB((Mn - 1) / 2, 120, 120, 120);
-    return;
-  }
-
   switch(s.arch){
     case A_SOLID:    archSolid(s, t, Mn);    break;
     case A_GRADIENT: archGradient(s, t, Mn); break;
@@ -825,9 +911,64 @@ void modRender(uint16_t mode, uint32_t t, uint16_t n){
     case A_GAZE:     archGaze(s, t, Mn);     break;
     default:         archSolid(s, t, Mn);    break;
   }
-
   if(s.flags & FLAG_SPARKLE){
     int g = 1 + Mn / 40;                        // count ∝ length (density); rate ∝ Speed (dtProb)
     for(int k = 0; k < g; k++) if(random8() < dtProb(50)){ int i = random16(Mn); modColRGB(i, 50, 50, 50); }
   }
+}
+
+// Grid-citation render: mode k renders MODE_TABLE[k] (FOLLOW / pinned grid mode).
+void modRender(uint16_t mode, uint32_t t, uint16_t n){
+  modFrameBegin(t);
+  gReset = (mode != gLastMode); gLastMode = mode; gCurMode = mode;
+
+  fill_solid(fx, gNumLeds, CRGB::Black);
+  if(mode == TOGA_EFFECT_OFF || mode >= MOD_MODE_COUNT) return;  // OFF / out of range → black
+
+  if(mode == 0){                                          // setupGrid calibration (static)
+    modColRGB(0, 140, 0, 0);
+    if(Mn > 1) modColRGB(Mn - 1, 0, 140, 0);
+    modColRGB((Mn - 1) / 2, 120, 120, 120);
+    return;
+  }
+
+  ModeSpec s; memcpy_P(&s, &MODE_TABLE[mode], sizeof(s));
+  modDispatch(s, t);
+}
+
+// Local (independent) render: local effect index k renders LOCAL_MODES[k]. A key
+// disjoint from the grid modes (0x2000|k) drives gReset so switching between a
+// grid mode and a local mode, or between two local modes, reseeds archetype state.
+void modRenderLocal(uint8_t idx, uint32_t t){
+  modFrameBegin(t);
+  uint16_t key = (uint16_t)(0x2000 | idx);
+  gReset = (key != gLastMode); gLastMode = key; gCurMode = key;
+
+  fill_solid(fx, gNumLeds, CRGB::Black);
+  if(idx >= TOGA_LOCAL_COUNT) return;
+
+  ModeSpec s; memcpy_P(&s, &LOCAL_MODES[idx], sizeof(s));
+  modDispatch(s, t);
+  // Floor direction: a strip flagged REV runs its directional effects the other way.
+  if(gFloorFlow == TOGA_FLOOR_REV && localIsDirectional(idx)) modMirrorX();
+}
+
+// Resolve a dance auto-program to the local effect it should show right now: step
+// through the program's list one entry every AUTO_DWELL_MS of VIRTUAL time (so
+// Speed scales the change rate, like every other module motion).
+static inline uint8_t autoResolveLocal(uint8_t prog, uint32_t t){
+  if(prog >= TOGA_LOCAL_AUTO_COUNT) return 0;
+  const AutoProg& p = AUTO_PROGS[prog];
+  if(p.len == 0) return 0;
+  uint32_t step = (t / AUTO_DWELL_MS) % p.len;
+  return p.list[step];
+}
+
+// Single render entry used by loop(): route an effect id to the grid-citation,
+// local-effect, or dance-auto path. `eff` is activeEffect() (already resolved for
+// FOLLOW). Local/auto ids sit above the grid modes (see toga_proto.h).
+void modRenderAny(uint8_t eff, uint32_t t){
+  if(togaIsAutoEffect(eff))  { modRenderLocal(autoResolveLocal(eff - TOGA_EFFECT_AUTO_BASE, t), t); return; }
+  if(togaIsLocalEffect(eff)) { modRenderLocal(eff - TOGA_EFFECT_LOCAL_BASE, t); return; }
+  modRender(eff, t, gWidth);                              // grid mode / OFF / out of range
 }

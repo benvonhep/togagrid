@@ -8,19 +8,18 @@
 
 # PART 0 — SYSTEM OVERVIEW
 
-**togagrid / "Toga Lights"** is a wireless ESP32 LED art installation for a **"CASTLE / 2026"** themed event. It runs on a private WiFi with no router and no internet. Four node *types* communicate over **ESP-NOW broadcast** on **WiFi channel 1**:
+**togagrid / "Toga Lights"** is a wireless ESP32 LED art installation for a **"CASTLE / 2026"** themed event. It runs on a private WiFi with no router and no internet. Three node *types* communicate over **ESP-NOW broadcast** on **WiFi channel 1**:
 
 ```
 Controller ──broadcast TogaCmdMsg (100ms heartbeat + commands 3x)──► Grid + Modules
 Grid       ──broadcast TogaSyncMsg (200ms, absolute state)─────────► Controller + Modules
-Modules    ──broadcast TogaHelloMsg (1/s, "I exist")───────────────► Webserver
-Webserver  ──broadcast TogaModCfgMsg (on demand, addressed by MAC)─► one Module
+Modules    ──broadcast TogaHelloMsg (1/s, "I exist")───────────────► Controller
+Controller ──broadcast TogaModCfgMsg (on demand, addressed by MAC)─► one Module
 ```
 
-- **1× Controller** — an Adafruit NeoTrellis 4×4 (16 RGB keys) handheld pad. The only human interface. **It also hosts the WiFi AP** (`togalights`) on channel 1.
+- **1× Controller** — an Adafruit NeoTrellis 4×4 (16 RGB keys) handheld pad. The only human interface. **It also hosts the WiFi AP** (`togalights`) on channel 1, **and serves the phone web UI** (`toga-ctl.local`) that lists and configures the modules.
 - **1× Grid** — a large woven LED wall (12 X-strips + 12 Y-strips of WS2812B). The **single source of truth**: runs 90 animations, applies commands, broadcasts absolute state.
 - **N× Modules** — satellite ESP32 boards, each driving its own WS2812B strip/panel. Pure followers, mirror the grid.
-- **1× Webserver** (optional) — a listen-only ESP32 serving a phone web UI to configure the modules. Drives no LEDs.
 
 **Core invariant:** commands are *relative steps* (mode +1, brightness −5…). **Only the grid applies them.** The grid then broadcasts its **absolute** state; everyone else mirrors it, so drift is structurally impossible — a node that misses packets or boots late re-locks within ~200 ms.
 
@@ -36,7 +35,6 @@ jogi/
 ├── grid/        grid.ino, grid_config.h, grid_beat.h, grid_draw.h, grid_text.h, grid_protos.h
 │   └── animations/  anim_field.h, anim_geometry.h, anim_life.h, anim_games.h, anim_faces.h, anim_new.h
 ├── module/      module.ino, module_config.h, module_effects.h
-├── webserver/   webserver.ino, togaws_config.h, README.md
 └── libraries/TogaProto/  library.properties, src/toga_proto.h, src/toga_ota.h
 ```
 No PlatformIO/Makefile/CMake. Build is **arduino-cli only**.
@@ -84,8 +82,8 @@ else      bufIdx = forward ? (135+led) : (257-led);   // even row offset embeds 
 - **Status LED:** onboard blue LED on **GPIO2** (`LED_BLUE 2`) — lit while the controller heartbeat is alive. (Old GPIO0 red LED dropped — it's a boot-strapping pin.)
 - Frame pacing `FRAME_MS 20` (50 FPS). Blink timings `MODE_ON_MS/MODE_OFF_MS/CASTLE_ON_MS/CASTLE_OFF_MS = 40`. `STROBE_BRI 255`.
 
-## 1.4 Webserver — `webserver/`
-- A dedicated ESP32 that **drives no LEDs** (no FastLED, no LED pins). WiFi radio + HTTP server only. Unplugging it doesn't affect the show.
+## 1.4 Module web UI — folded into `controller/`
+- The phone module-manager UI (list + per-module config) is served **by the controller** at `toga-ctl.local` — no dedicated board. The old standalone `webserver/` sketch has been removed; its listener/config path now lives inside `controller.ino` (see PART 10). It drives no LEDs and never touches the show.
 
 ---
 
@@ -128,9 +126,9 @@ Port **3232**, auth **`toga-ota`** (= `TOGA_OTA_PASS`).
 - **Never `esptool erase_flash`** — it wipes per-device NVS config (module geometry, grid settings). NVS sits at the same address in both partition schemes; OTA doesn't touch it.
 - OTA safety net (`toga_ota.h`): a fresh image runs on probation (`verifyRollbackLater()` returns true), self-commits after **60 s + one bus packet** (`TOGA_OTA_COMMIT_FAST_MS=60000`) or **5 min** unconditionally (`TOGA_OTA_COMMIT_MAX_MS=300000`); a crash/bootloop before that auto-rolls-back. Each sketch has `extern "C" bool verifyRollbackLater(){return true;}` below its includes, and calls `togaOtaMarkValidWhenHealthy(t, heardBus)` once per frame. This catches crashes, NOT "boots but renders garbage" — hence the binary archive.
 
-**Hostnames (mDNS + OTA):** grid `toga-grid.local`, controller `toga-ctl.local`, module `toga-mod-<last-3-MAC-bytes-hex>.local`, webserver `toga.local`.
+**Hostnames (mDNS + OTA):** grid `toga-grid.local`, controller `toga-ctl.local` (also serves the module UI), module `toga-mod-<last-3-MAC-bytes-hex>.local`.
 
-**Wire-format changes:** `TOGA_VERSION` is currently **4** (v4 added battery telemetry to `TogaHelloMsg` via its reserved bytes, size unchanged, and a `battMon` toggle to `TogaModCfgMsg`, 16→18 bytes). Any change to a struct or message type requires bumping it and **reflashing grid + controller + all modules + webserver together**. A version-mismatched node is invisible to all others (or worse, its stale packet passes validation and is applied — the historical strobe-flicker bug).
+**Wire-format changes:** `TOGA_VERSION` is currently **4** (v4 added battery telemetry to `TogaHelloMsg` via its reserved bytes, size unchanged, and a `battMon` toggle to `TogaModCfgMsg`, 16→18 bytes). Any change to a struct or message type requires bumping it and **reflashing grid + controller + all modules together**. A version-mismatched node is invisible to all others (or worse, its stale packet passes validation and is applied — the historical strobe-flicker bug).
 
 ---
 
@@ -152,7 +150,7 @@ Port **3232**, auth **`toga-ota`** (= `TOGA_OTA_PASS`).
 #define TOGA_MSG_CMD    1       // controller -> broadcast
 #define TOGA_MSG_SYNC   2       // grid -> broadcast
 #define TOGA_MSG_HELLO  3       // module -> broadcast (1/s)
-#define TOGA_MSG_MODCFG 4       // webserver -> broadcast, addressed by MAC
+#define TOGA_MSG_MODCFG 4       // controller (module UI) -> broadcast, addressed by MAC
 // 5 was TOGA_MSG_OTA (retired). Do not reuse.
 
 #define TOGA_EFFECT_COUNT  9
@@ -587,9 +585,9 @@ ledXY(x,y): bounds-checked → fx[XY] or gTrash
 
 **sendHello():** every `HELLO_MS=1000` ms, `TogaHelloMsg` with mac, group, effectPin, `effectNow=activeEffect()`, gain, `pin=cfgPin`, linkAlive, width, height, `uptimeS=t/1000`.
 
-**Serial console (115200):** `show`/`help`/`?`, `group <0-2>`, `w <n>`(1..512), `h <n>`(1..255), `leds <n>`(sets w, h=1), `pin <n>`(validated on save), `effect <0-8>` / `effect -1` or `follow`, `gain <10-200>`, `bmon <0/1>` (Li-Ion undervoltage lockout, default off, persists immediately), `save`, `reboot`. effect/gain/bmon live; w/h/pin need save+reboot.
+**Serial console (115200):** `show`/`help`/`?`, `group <0-2>`, `w <n>`(1..512), `h <n>`(1..255), `leds <n>`(sets w, h=1), `pin <n>`(validated on save), `effect <0-8>` / `effect -1` or `follow`, `gain <10-200>`, `bmon` (Li-Ion undervoltage lockout — hardwired ON, not switchable; the command just reports that), `save`, `reboot`. effect/gain live; w/h/pin need save+reboot.
 
-**Battery monitoring (opt-in, `module_battery.h`):** single Li-Ion via 50:50 divider on **GPIO34** (ADC1_CHANNEL_6, esp_adc_cal, no analogRead). `readBattMv()` averages 8 raw samples (2 ms apart), one IIR low-pass (`IIR_ALPHA 0.15`, ~61 s tau). Every 10 s the loop compares the *filtered* pin mV to `BATT_THRESHOLD_MV 1650` (=3.30 V cell); `BATT_CONFIRM 3` consecutive breaches → UVLO: print, blank strip, tri-state `cfgPin`, `esp_deep_sleep_start()`. `RTC_DATA_ATTR batteryDead` re-sleeps on every boot until a real power cycle clears it (no wake source). Default **OFF** (`battMonEn`, NVS `bmon`) so a floating pin on the USB bench can't false-trip. `battVolt` (cell V) is a global, sent in `TogaHelloMsg.battMv`/`battFlags` and shown/toggled in the webserver UI.
+**Battery monitoring (always on, `module_battery.h`):** single Li-Ion via 50:50 divider on **GPIO34** (ADC1_CHANNEL_6, esp_adc_cal, no analogRead). `readBattMv()` averages 8 raw samples (2 ms apart), one IIR low-pass (`IIR_ALPHA 0.15`, ~61 s tau). Every 10 s the loop compares the *filtered* pin mV to `BATT_THRESHOLD_MV 1650` (=3.30 V cell); `BATT_CONFIRM 3` consecutive breaches → UVLO: print, blank strip, tri-state `cfgPin`, `esp_deep_sleep_start()`. `RTC_DATA_ATTR batteryDead` re-sleeps on every boot until a real power cycle clears it (no wake source). The lockout is **hardwired ON** (`const battMonEn = 1`), not switchable. **Sanity floor `BATT_SANITY_MV 1250`** (=2.50 V cell): a filtered reading *below* it means no cell is on the sense path — mechanical battery switch off, device running from the charge jack, so GPIO34 reads ~0 V — and is ignored (no false deep-sleep) rather than treated as undervoltage; it sits far below the 3.30 V trip so it never masks real cell protection. `battVolt` (cell V) is a global, sent in `TogaHelloMsg.battMv`/`battFlags` and shown in the module web UI (served by the controller at `toga-ctl.local`).
 
 **Effects (`module_effects.h`, `gPatterns[]` index = effect id, VERBATIM key parts):**
 ```c
@@ -656,29 +654,20 @@ Serial (German): "Tempo verworfen (%s) — tippe neu ein", "Takt passt nicht meh
 
 ---
 
-# PART 10 — WEBSERVER (`webserver/webserver.ino` + `togaws_config.h`)
+# PART 10 — MODULE WEB UI (folded into `controller/controller.ino`)
 
-Listen-only module manager. Config: `togaws_config.h` only defines `#define WS_HOSTNAME "toga"` (mDNS `http://toga.local/` + OTA host); WLAN creds inherited from `toga_proto.h`.
+Listen-only module manager, served by the **controller** at `toga-ctl.local` — there is no separate board. (The old standalone `webserver/webserver.ino` + `togaws_config.h` sketch was removed once the controller folded the same UI in; it lives in git history if ever needed.) The controller already hosts the AP on `TOGA_CHANNEL`, so no channel-0 peer trick is needed and no router-channel caveat applies.
 
-**Includes:** `Arduino.h`, `toga_proto.h`, `toga_ota.h`, `WebServer.h`, `ESPmDNS.h`, `togaws_config.h`. `WebServer server(80);`
-
-**Constants:** `MAX_MODULES 16`, `OFFLINE_MS 5000`, `FORGET_MS 600000`, hello ring `HQ_LEN 8`.
-**`struct ModEntry { bool used; uint8_t mac[6]; uint8_t group,effectPin,effectNow,gain,pin,linkAlive; uint16_t w,h; uint32_t uptimeS,lastSeen; };`**
-
-**setup():** `togaWifiBegin(WS_HOSTNAME)`; wait up to 40×500 ms for WL_CONNECTED; on connect `MDNS.begin(WS_HOSTNAME)`, `addService("http","tcp",80)`, `enableArduino(TOGA_OTA_PORT,true)`; `esp_now_init()` (fatal on fail); `register_recv_cb(onReceive)`; **peer add with channel 0** (use interface's current channel — this node inherits the router's channel, unlike `togaAddPeer`); `togaOtaSetup(WS_HOSTNAME)`; routes `/`, `/api/modules`, `/api/set`, 404; `server.begin()`.
-
-**onReceive():** `togaParseHello` → ring `helloQ[HQ_LEN]`; `togaParseSync` → single `syncBuf`, `syncSeen`, `syncAt`.
-**upsert(mac):** find used row by MAC; else first free; else recycle stalest (min lastSeen); never null. **drainHellos(t):** merge ring into table, copy all fields, `lastSeen=t`; drop rows older than FORGET_MS.
+**In `controller.ino`:** `WebServer server(80)`; `struct ModEntry` (mac, group, effectPin/Now, gain, pin, linkAlive, w/h, uptimeS, battMv/battFlags, followMask, gap, floor, fwBuild, localHue, name, lastSeen); hello ring `helloQ[HQ_LEN]`. Constants `MAX_MODULES 16`, `OFFLINE_MS 5000`, `FORGET_MS 600000`. The recv callback parks hellos in the ring; `loop()` merges them into the table — HTTP handlers only read the table, so no locking.
 
 **Endpoints:**
 - `GET /` → serves `PAGE[]` (PROGMEM single page).
-- `GET /api/modules` → JSON `{ch, chWant, chOk, gridSeen (sync <2000ms), gridMode (animIndex+1 or 0), effects[9 names], follow(255), mods:[{mac, online (age<5000), age(sec), grp, eff, effNow, gain, pin, w, h, link, up}]}`.
-- `GET /api/set?mac=&effect=&gain=` → validate (effect 0..8 or 255, gain 10..200; absent effect→CFG_KEEP, absent gain→0=keep) → `sendModCfg` → `{"sent":true}`. **No optimistic echo** — the row updates only when the module's next hello confirms.
-**sendModCfg(mac,eff,gain):** `TogaModCfgMsg`, broadcast **3×** (idempotent absolute values), addressed by MAC.
+- `GET /api/modules` → JSON `{ch, chWant, chOk, gridSeen, gridMode, effects[names], follow(255), mods:[{mac, online, age, grp, eff, effNow, gain, pin, w, h, name, follow, gap, floor, batt, bmon, blow, fw, link, up}]}`.
+- `GET /api/set?mac=&effect=&gain=&follow=&leds=&gap=&floor=&bmon=&name=` → validate → `sendModCfg` (broadcast **3×**, idempotent, addressed by MAC) → `{"sent":true}`. **No optimistic echo** — the row updates only when the module's next hello confirms.
 
-**Web UI (`PAGE[]`):** zero external JS libs (vanilla `fetch`, inline CSS, dark theme `#111`/`#eee`, **German** text, title "TOGA Module"). Per-module card: MAC, online/offline pill ("weg seit Ns"), controller-link pill, meta (`w×h · Pin · Gruppe · läuft: <effNow> · up Ns`), **Effekt** dropdown (effect names + "folgt Grid"=255), **Gain** slider 10–200%. `tick()` fetches `/api/modules`; `setInterval(tick,1500)` but **paused while dragging a slider** (`touching`). Effect change → `set(mac,'effect='+v)`; gain release → `set(mac,'gain='+v)`. Serial mirrors the module list every 5 s (fallback).
+**Web UI (`PAGE[]`):** zero external JS libs (vanilla `fetch`, inline CSS, dark theme, **German** text, title "TOGA Module"). Per-module card: name + MAC + online/link/firmware pills + "Finden" (identify blink), **Effekt** dropdown, **Slave** checkboxes (Grid-Modus/Strobe/Helligkeit/Beat/Blackout), **Gain** slider, **LEDs**, **Gap**, **Boden** (floor-flow), and **Akku** row (🔋 voltage pill + Unterspannungs-Schutz indicator — checkbox is `checked disabled`, "immer an"; the lockout is hardwired on and can't be toggled). `tick()` polls `/api/modules` every 1.5 s; a per-control `pend()`/`put()` lock protects in-flight edits (no global pause; fixes the two-phone glitch).
 
-**Replaces** the deleted `module/esp32_webserver_toga/` (still in git history) — that was itself a module with a bootstrap/iro.js/jQuery UI, used FastLED 3.10 + core 3.x, incompatible with the pinned stack, so rewritten dependency-free.
+> **This is a copy-pasted twin of the code that used to live in `webserver/`.** Any change to a module-UI feature (a JSON field, a card row, a `handleSet` arg, a render line) must be made here — there is now only one copy, so keep it the single source of truth.
 
 ---
 
@@ -699,12 +688,12 @@ Full 16-key map is in Part 4. Parameters: Brightness ±5 (1–128, saved per mod
 ## Critical constraints (read before changing anything)
 1. **Pinned stack enforced by `#error`:** FastLED **3.6.0** + arduino-esp32 **2.0.17**. Do not upgrade.
 2. **Partition scheme is `min_spiffs`** (two app slots for OTA), NOT `huge_app`.
-3. **`TOGA_VERSION` = 4.** Any wire-format change → reflash **all four node types together**.
+3. **`TOGA_VERSION` = 4.** Any wire-format change → reflash **all three node types together** (grid + controller + every module).
 4. **Never `erase_flash`** (wipes per-device NVS).
 5. **Everything on WiFi channel 1 / no router.** The controller's AP handles this.
 6. `libraries/TogaProto` must be symlinked into the Arduino libraries dir before building.
 7. The grid is the **only** node that applies command steps and the **only** sync source; the controller is the **only** command source and the AP host. Preserve those roles.
-8. Working-tree note: `module/`, `webserver/`, `libraries/`, `flash-ota.sh` are currently untracked; old `module/esp32_webserver_toga/` is deleted (still in git history).
+8. The standalone `webserver/` sketch has been **removed** — its module-manager UI is folded into `controller/controller.ino` (served at `toga-ctl.local`). Old `module/esp32_webserver_toga/` is also deleted; both remain in git history.
 
 ---
 
