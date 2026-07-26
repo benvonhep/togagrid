@@ -35,11 +35,10 @@
 // ═══════════════════════════════════════════════════════
 #include <Arduino.h>
 #include <toga_proto.h>          // the wire format, shared with grid/ and module/
-#include <toga_ota.h>            // always-on firmware update; we host the AP
 #include <Wire.h>
 #include <Preferences.h>          // NVS: persist this controller's own pad-brightness factor
 #include <WebServer.h>           // the phone module-manager UI (was standalone webserver/, now folded in here — that sketch is deleted)
-#include <ESPmDNS.h>             // advertise the page over mDNS on top of the OTA instance
+#include <ESPmDNS.h>             // advertise the page over mDNS as toga-ctl.local
 #include "Adafruit_NeoTrellis.h"
 
 // ── Module manager (formerly the standalone webserver/ sketch, now here) ──────────
@@ -48,9 +47,9 @@
 // second with a TogaHelloMsg; we keep a table of who is out there and send a
 // TogaModCfgMsg addressed at one MAC when the operator changes something. This
 // is a pure listener/config path — it never touches the show or the meters.
-// Declared above the first function definition (verifyRollbackLater, below) so
-// arduino-cli's hoisted prototype for upsert() — which returns ModEntry* —
-// lands after the type, not before it.
+// Declared above the first function definition (below) so arduino-cli's hoisted
+// prototype for upsert() — which returns ModEntry* — lands after the type, not
+// before it.
 WebServer server(80);
 #define MAX_MODULES  16
 #define OFFLINE_MS   5000        // 5 missed hellos → offline (but stays listed)
@@ -79,17 +78,6 @@ ModEntry mods[MAX_MODULES];
 #define HQ_LEN 8
 volatile TogaHelloMsg helloQ[HQ_LEN];
 volatile uint8_t hqHead = 0, hqTail = 0;
-
-// Must stay BELOW every include: this is a function DEFINITION, and arduino-cli
-// injects its generated prototypes just above the first one it finds. Put it any
-// higher and the prototype for handleKey() lands above Adafruit_NeoTrellis.h,
-// which is where TrellisCallback comes from. (The module-manager type above is
-// declarations only — no function — so the injection point is still right here.)
-//
-// Keep a freshly OTA'd image on probation until it has proven itself, instead
-// of letting initArduino() bless it before setup() runs. extern "C" is
-// mandatory — see the long note in toga_ota.h.
-extern "C" bool verifyRollbackLater() { return true; }
 
 Adafruit_NeoTrellis trellis;
 
@@ -170,7 +158,7 @@ uint32_t C(uint8_t r,uint8_t g,uint8_t b){ return trellis.pixels.Color(r,g,b); }
 // Commands go out as a broadcast so the grid and every LED module hear the
 // same packet. The grid unicasts nothing back any more — it broadcasts its
 // absolute state, which is what keeps the meters below honest.
-volatile bool gsSyncSeen=false;                // our proof the radio works, for the OTA commit
+volatile bool gsSyncSeen=false;                // have we ever heard the grid? drives the page's grid-freshness pill
 volatile uint32_t gsSyncAt=0;                  // last sync arrival (millis) — the page's grid-freshness
 void onReceive(const uint8_t*mac,const uint8_t*data,int len){
   // A module announcing itself — park it in the ring, loop() merges it into the
@@ -756,6 +744,10 @@ void renderLEDs(uint32_t t){
   uint8_t gb=gs.globalBrightness?gs.globalBrightness:BRI_DEFAULT;
   uint16_t g255=(uint16_t)gb*2; if(g255>255)g255=255;   // 1..MAX_BRIGHTNESS → 0..255
   uint8_t padScale=(uint8_t)constrain((int)((uint32_t)g255*ctrlBri/255),30,255);   // floor keeps meters readable
+  // The "exempt" keys (Helligkeit 4, Speed-Sweep 2) used to ignore padScale entirely
+  // and blazed in a dark room when active. Track the pad dimming, but with a higher
+  // floor than the params so they stay findable — visible, never blinding.
+  uint8_t visScale=padScale<60?60:padScale;
   for(int i=0;i<16;i++){
     uint32_t col=C(0,0,0);
     if(state==ST_ADJUST){
@@ -793,7 +785,7 @@ void renderLEDs(uint32_t t){
     // slow breathe = GLOBAL, fast breathe = MODE factor, solid white = CONTROLLER,
     // a steady medium white at rest.
     if(i==4){
-      if(briMode!=BRI_NONE) col=briBtnCol(t);        // while editing: full brightness so you can read the mode
+      if(briMode!=BRI_NONE) col=scaleCol(briBtnCol(t),visScale);  // while editing: dimmed with the pad (was full 255 → blinding in the dark)
       else col=scaleCol(C(70,70,70),padScale);       // at rest: same brightness as the other keys (dimmed with the pad)
     }
     // Button 10 (Blackout): bright while active, a dim marker at rest so the key is
@@ -801,7 +793,7 @@ void renderLEDs(uint32_t t){
     if(i==10) col = gBlackout ? C(200,200,200) : C(25,25,25);
     // Speed-sweep (logical 2 / phys 4): blinks while active, dimmed-down marker at
     // rest so it is findable. Not dimmed by the global brightness, like blackout.
-    if(i==2)  col = gSweep ? (blink?C(70,44,0):C(0,0,0)) : C(18,12,0);   // dimmer active blink (was 190,120,0 — too bright)
+    if(i==2)  col = gSweep ? (blink?scaleCol(C(110,70,0),visScale):C(0,0,0)) : C(18,12,0);   // active blink now dims with the pad (was fixed 70,44,0 — too bright in the dark)
     // While blacked out, kill every pad LED except the ones the operator still uses:
     // blackout(10), strobe(15), mode-strobe(14), castle-strobe(13) and auto(0).
     if(gBlackout && i!=0 && i!=10 && i!=13 && i!=14 && i!=15) col=C(0,0,0);
@@ -860,12 +852,12 @@ void setup(){
   // No send callback: broadcast is never acked, so the status is always
   // SUCCESS and there is nothing useful to do with it.
   if(!togaAddPeer(TOGA_BCAST)){ Serial.println(F("Broadcast peer failed!")); while(1) delay(1000); }
-  togaOtaSetup("toga-ctl");                          // flashable from now on, no trigger
 
   // Module-manager web UI, served on our own AP. Reach it from a phone joined to
   // togacontroller at http://192.168.4.1/ (the SoftAP gateway). mDNS is best-effort:
-  // togaOtaSetup already began an mDNS instance, we just advertise HTTP on it —
-  // handy on a laptop, flaky over SoftAP on iOS, hence the IP is the sure path.
+  // we advertise HTTP as toga-ctl.local — handy on a laptop, flaky over SoftAP on
+  // iOS, hence the IP is the sure path.
+  MDNS.begin("toga-ctl");
   MDNS.addService("http", "tcp", 80);
   server.on("/", handleRoot);
   server.on("/api/modules", handleModules);
@@ -876,8 +868,8 @@ void setup(){
   Serial.println(F("http ready on :80  (http://192.168.4.1/)"));
 }
 
-// Who is on our AP? The fleet's nodes join it to be flashable, so an empty list
-// while a board is powered means that board is not reachable for OTA — the one
+// Who is on our AP? The fleet's nodes join it for the bus/web UI, so an empty
+// list while a board is powered means that board is not on the network — the one
 // fact this node is uniquely able to report.
 void reportApClients(uint32_t t){
   static uint32_t last = 0;
@@ -895,18 +887,13 @@ void loop(){
   static bool prevPlus=false, prevMinus=false;
   uint32_t t=millis();
 
-  // Above the 20ms poll gate below: that returns on most iterations, and OTA
-  // and the web UI must not be starved by it.
-  togaOtaHandle();
+  // Above the 20ms poll gate below: that returns on most iterations, and the web
+  // UI must not be starved by it.
   server.handleClient();                            // the module-manager page
   drainHellos(t);                                   // merge parked hellos into the table
 
   if(t-lastHB>=100){ lastHB=t; sendCmd(0,0,0); }   // heartbeat (carries strobe state)
 
-  // Our bus evidence is the grid's sync — we transmit, the grid answers. Without
-  // this call the image stays PENDING_VERIFY forever and the NEXT reset of any
-  // kind quietly reverts to the old firmware.
-  togaOtaMarkValidWhenHealthy(t, gsSyncSeen);
   reportApClients(t);
 
   if(t-lastPoll<20) return;

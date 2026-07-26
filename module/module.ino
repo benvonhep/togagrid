@@ -19,17 +19,15 @@
 //
 //  Per-device config (group, geometry, pin, effect, gain) lives in NVS and
 //  is set over serial or from the web UI — the same binary flashes to every
-//  module, over the air: ./flash-ota.sh module toga-mod-<mac6>.local
+//  module. Flash over USB with arduino-cli (see BEFEHLE.md).
 //  Type `help` on the serial console at 115200.
 //
-//  Board: ESP32 Dev Module · Partition: min_spiffs (OTA needs 2 app slots)
-//  FastLED 3.6.0 · core 2.0.17
+//  Board: ESP32 Dev Module · Partition: min_spiffs · FastLED 3.6.0 · core 2.0.17
 // ═══════════════════════════════════════════════════════
 #include <FastLED.h>
 #include <math.h>
 #include <Preferences.h>
 #include "module_config.h"      // pulls in <toga_proto.h>
-#include <toga_ota.h>          // on-demand firmware update; see loop()
 #include <WebServer.h>         // fallback: serve the module page over the phone hotspot
 #include <ESPmDNS.h>
 
@@ -75,11 +73,6 @@ char     gHotSsid[33] = TOGA_HOTSPOT_SSID;   // NVS overrides in loadConfig()
 char     gHotPass[65] = TOGA_HOTSPOT_PASS;
 bool     gIsHost   = false;                  // do we own toga-mod.local? (fallback election)
 uint32_t gFbConnAt = 0;                      // when we joined the hotspot (grace before claiming)
-
-// Keep a freshly OTA'd image on probation until it has proven itself, instead
-// of letting initArduino() bless it before setup() runs. extern "C" is
-// mandatory — see the long note in toga_ota.h.
-extern "C" bool verifyRollbackLater() { return true; }
 
 // ── Per-device config (NVS) ──
 uint8_t  gGroup  = MODULE_GROUP_DEFAULT;  // which broadcasts we act on
@@ -314,7 +307,7 @@ void loadConfig() {
   }
   // Migrate the old "off" pin (effect id 8 = powersave/black) to the new OFF
   // sentinel, so a module previously pinned to blackout stays black after this
-  // OTA instead of rendering mode 8 (blackHole).
+  // update instead of rendering mode 8 (blackHole).
   if (gEffectPin == 8) gEffectPin = TOGA_EFFECT_OFF;
   if (!validEffectPin(gEffectPin)) gEffectPin = EFFECT_FOLLOW;   // incl. any stale value
   gGain = constrain((int)gGain, 10, 200);
@@ -959,9 +952,9 @@ void electionTick(uint32_t t) {
   bool amHost = best && memcmp(best, gMyMac, 6) == 0;
   if (amHost != gIsHost) {
     gIsHost = amHost;
-    mdnsAs(amHost ? TOGA_FALLBACK_HOST : togaOtaModuleHost());
+    mdnsAs(amHost ? TOGA_FALLBACK_HOST : togaModuleHost());
     Serial.printf("net: %s http://%s.local/\n",
-                  amHost ? "HOSTING" : "released", amHost ? TOGA_FALLBACK_HOST : togaOtaModuleHost());
+                  amHost ? "HOSTING" : "released", amHost ? TOGA_FALLBACK_HOST : togaModuleHost());
   }
 }
 void fallbackTick(uint32_t t) {
@@ -976,7 +969,7 @@ void fallbackTick(uint32_t t) {
     gFbConnAt = t;
     Serial.printf("net: on hotspot '%s' ip %s — page at http://%s.local/ (once elected) or the IP\n",
                   gHotSsid, WiFi.localIP().toString().c_str(), TOGA_FALLBACK_HOST);
-    mdnsAs(togaOtaModuleHost());        // start on our unique name; election may promote us
+    mdnsAs(togaModuleHost());        // start on our unique name; election may promote us
     server.on("/", handleRoot);
     server.on("/api/modules", handleModules);
     server.on("/api/set", handleSet);
@@ -1053,14 +1046,14 @@ void setup() {
     FastLED.show();
   }
 
-  togaWifiBegin(togaOtaModuleHost());     // STA on togacontroller (ch1) — bus AND network
+  togaWifiBegin(togaModuleHost());     // STA on togacontroller (ch1) — bus AND network
   gBootMs = millis();                      // netTick() falls back to the hotspot after TOGA_FALLBACK_MS
-  // Our identity for the UI's per-module config and for OTA addressing. Must be
-  // set BEFORE the callback goes live: it is what onReceive filters on, and a
-  // zero MAC there would silently match nothing it should.
+  // Our identity for the UI's per-module config. Must be set BEFORE the callback
+  // goes live: it is what onReceive filters on, and a zero MAC there would
+  // silently match nothing it should.
   WiFi.macAddress(gMyMac);
   gFwBuild = TOGA_FW_BUILD;                 // fingerprint THIS build so the web UI can spot a stale module
-  // First-boot name: mod-<last 3 MAC bytes>, matching the OTA hostname. Persist it
+  // First-boot name: mod-<last 3 MAC bytes>, matching the mDNS hostname. Persist it
   // so it survives and the web UI shows something human before anyone renames it.
   if (gName[0] == '\0') {
     snprintf(gName, sizeof(gName), "mod-%02x%02x%02x", gMyMac[3], gMyMac[4], gMyMac[5]);
@@ -1071,7 +1064,6 @@ void setup() {
   // We transmit exactly one thing — the hello — so we do need the broadcast peer.
   // A failure here is NOT fatal: it costs us the web UI, not the show.
   if (!togaAddPeer(TOGA_BCAST)) Serial.println(F("broadcast peer failed — no hello, module still runs"));
-  togaOtaSetup(togaOtaModuleHost());     // flashable from now on, mid-show, no trigger
 
   Serial.println();
   Serial.printf("=== TOGA MODULE grp=%u %ux%u pin=%u eff=%s mac=%s ===\n",
@@ -1082,13 +1074,9 @@ void setup() {
 }
 
 void loop() {
-  serialPoll();                          // stays live in OTA mode: `reboot` is the escape hatch
+  serialPoll();                          // `reboot` is the escape hatch for a stuck module
   if (gRebootAt && (int32_t)(millis() - gRebootAt) >= 0) { Serial.println(F("rebooting…")); delay(50); ESP.restart(); }  // LED-count change
 
-  // Above every early return below (the frame cap, and the strobe on every
-  // single iteration while held) — a node you cannot flash mid-strobe is a node
-  // you cannot flash exactly when you want to.
-  togaOtaHandle();
   netTick();           // hunt for the controller; after 30s, fall back to the phone hotspot
                        // (and, once there, serve the module page — see fallbackTick)
 
@@ -1128,11 +1116,6 @@ void loop() {
 
   // ── Announce ourselves so the web UI can list and address us ──
   sendHello(t, senderAlive);
-
-  // Sits here, not at the end of loop(): the strobe path below returns early on
-  // every iteration while held, and a module strobed through its first minute
-  // would never commit and would roll back on the next reboot.
-  togaOtaMarkValidWhenHealthy(t, senderAlive);
 
   // ── Battery: measure every 10s, filter, and (if enabled) confirm undervoltage
   //    before shutting down. Above the frame cap so it always runs; the ~16ms

@@ -74,7 +74,7 @@ struct ModeSpec {
 //                RAIN/CHASE/MARQUEE, explosive→BURST, chaotic→COMET/SWARM.
 //   · RHYTHM   — steady vs pulsing vs stochastic vs beat-locked, via speed/flags.
 // PROGMEM: read one row per frame.
-#define MOD_MODE_COUNT 72
+#define MOD_MODE_COUNT 107
 static const ModeSpec MODE_TABLE[MOD_MODE_COUNT] PROGMEM = {
   /* 0 setupGrid       */ { A_BLINK,     0,  0, 100,  0, 0,                             0, 3 },  // static red/green lattice (special-cased in modRender)
   /* 1 heartbeat       */ { A_PULSE,     0,255, 180,  0, FLAG_SYM,                     25, 4 },  // red double-thump rings from centre (more/wider rings, low-bri visible)
@@ -148,6 +148,41 @@ static const ModeSpec MODE_TABLE[MOD_MODE_COUNT] PROGMEM = {
   /*69 emberVortex     */ { A_SPIN,     18,240, 100,  0, 0,                            40,60 },  // swirling fire/ember vortex
   /*70 prismShards     */ { A_BURST,     0,220, 100,  0, FLAG_SYM|FLAG_RAINBOW,       100,16 },  // rainbow crystal shards explode/reassemble
   /*71 nebulaBreath    */ { A_NOISE,   200,180,  30,  0, FLAG_SPARKLE,                 55,10 },  // breathing deep-space nebula + stars
+  /*72 jellyfishBloom  */ { A_PULSE,   150,190,  80,  0, FLAG_SYM,                     45, 3 },  // soft teal bell pulse + drifting tentacles
+  /*73 kaleidoWheel    */ { A_SPIN,      0,220,  90,  0, FLAG_RAINBOW,                180, 0 },  // spinning jewelled kaleidoscope
+  /*74 lightningTree   */ { A_BURST,   160,120, 130,  0, FLAG_SPARKLE,                 90,14 },  // white-blue fractal bolt flashes
+  /*75 dnaHelix        */ { A_CHASE,   170,210,  90,  0, FLAG_SYM,                     45,12 },  // twin twisting strands + rungs
+  /*76 fireflies       */ { A_TWINKLE,  50,200,  90, 40, 0,                            40,150},  // warm swarm blinking in/out of sync
+  /*77 blackHoleAccr.  */ { A_SPIN,     25,230,  90,  0, 0,                            40,60 },  // whirling infalling accretion disk
+  /*78 oceanCaustics   */ { A_NOISE,   130,200,  70,  0, 0,                            45,12 },  // shimmering blue-green light veins
+  /*79 phoenixRise     */ { A_FIRE,     20,255, 110,  0, 0,                            60,120},  // beating molten firebird wings
+  /*80 clockworkGears  */ { A_SPIN,     30,200,  80,  0, 0,                            60, 0 },  // interlocking brass gears turning
+  /*81 magneticDipole  */ { A_GRADIENT,  0,200,  40,  1, FLAG_SYM,                    160, 0 },  // red↔blue looping field lines
+  /*82 quantumOrbitals */ { A_PLASMA,  190,200,  60,  0, FLAG_SPARKLE,                 45,90 },  // morphing violet electron clouds
+  /*83 serpentNest     */ { A_SWARM,    90,220, 100, 10, 0,                            40, 0 },  // tangle of gliding snakes
+  /*84 crystalGrowth   */ { A_BURST,   255,200,  70,  0, FLAG_RAINBOW,                 90,16 },  // faceted crystals blooming/dissolving
+  /*85 solarFlare      */ { A_PLASMA,   20,230,  70,  0, 0,                            40,90 },  // churning sun + erupting coronal loop
+  /*86 mandalaBloom    */ { A_SPIN,     40,210,  60,  0, FLAG_RAINBOW,                150, 0 },  // breathing counter-rotating petals
+  /*87 inkBloom        */ { A_PULSE,   255,210,  60,  0, FLAG_SYM,                     60, 3 },  // ink drops diffusing in water
+  /*88 electricEel     */ { A_COMET,   145,200, 110,  1, FLAG_SPARKLE,                 45, 0 },  // sine-body eel firing sparks
+  /*89 galaxyCollision */ { A_SPIN,    200,200,  70,  0, 0,                           160, 0 },  // two spiral galaxies merging
+  /*90 gyroscope       */ { A_SPIN,    120,200,  90,  0, 0,                           140, 0 },  // nested rings tumbling in 3D
+  /*91 doublePendulum  */ { A_COMET,   200,210, 150,  1, FLAG_SPARKLE,                 50, 0 },  // chaotic swinging tip trail
+  /*92 pulsarBeacon    */ { A_SWEEP,   155,180, 120,  0, FLAG_SYM,                     25,60 },  // twin beams + expanding shells
+  /*93 wormholeThroat  */ { A_PULSE,   190,210, 120,  0, FLAG_SYM|FLAG_REVERSE,        45, 4 },  // rings streaming inward down a throat
+  /*94 spirographArms  */ { A_SPIN,     60,200, 110,  0, 0,                           130, 0 },  // differential arms tracing loops
+  /*95 honeycombPulse  */ { A_BLOCKS,    0,220,  80,  0, FLAG_SYM|FLAG_RAINBOW,         6, 0 },  // radial colour wave through cells
+  /*96 turbineBlades   */ { A_SPIN,     30,190, 160,  0, 0,                            90, 0 },  // spinning curved turbine blades
+  /*97 mantaGlide      */ { A_COMET,   180,180,  70,  1, 0,                            40, 1 },  // gliding ray + glowing tail spots
+  /*98 plasmaGlobe     */ { A_SWEEP,   200,170,  90,  0, FLAG_SYM|FLAG_SPARKLE,        40,60 },  // electric tendrils from the core
+  /*99 supernovaShell  */ { A_BURST,    10,210, 100,  0, FLAG_SYM,                    110,14 },  // flash + expanding filament shell
+  /*100 cometSwarm     */ { A_COMET,   160,190, 100,  4, 0,                            45, 0 },  // comets orbiting a blazing star
+  /*101 roseWindow     */ { A_SPIN,      0,220,  60,  0, FLAG_RAINBOW,                150, 0 },  // rotating stained-glass rose
+  /*102 tesseract      */ { A_SPIN,    160,200,  90,  0, 0,                           140, 0 },  // rotating 4D hypercube wireframe
+  /*103 torusKnot      */ { A_SPIN,    190,210, 100,  0, FLAG_RAINBOW,                150, 0 },  // glowing 3D torus knot
+  /*104 morphSwarm     */ { A_SWARM,     0,210,  90, 14, FLAG_RAINBOW,                 40, 0 },  // swarm morphing between figures
+  /*105 gravLens       */ { A_TWINKLE, 200,120,  80, 40, FLAG_SPARKLE,                 35,120},  // starfield bent around a black hole
+  /*106 celestialDragon*/ { A_COMET,   150,200, 100,  1, 0,                            50, 0 },  // long 3D serpent-dragon
 };
 
 // ══════════════════════════════════════════════════════════════

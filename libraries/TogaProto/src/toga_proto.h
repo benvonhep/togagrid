@@ -24,9 +24,9 @@
 //  why nothing here may go near a router: it would take the node off the bus
 //  silently. The CONTROLLER therefore hosts the WLAN itself (togaApBegin) and
 //  pins it to TOGA_CHANNEL — the channel the bus already runs on. Joining it
-//  moves nobody, so every node is on the network AND on the bus at once.
-//  That is what makes every node flashable mid-show (toga_ota.h), and it means
-//  the installation needs no router anywhere.
+//  moves nobody, so every node is on the network AND on the bus at once, which
+//  also lets the controller/module web UIs be reachable over that same AP. It
+//  means the installation needs no router anywhere.
 // ══════════════════════════════════════════════════════════════════════
 #pragma once
 
@@ -124,7 +124,7 @@
 // A module in FOLLOW mode renders one dedicated 1D mode per grid mode, so the
 // count is the grid's mode count. The names below are the grid animation names
 // at each index (labels only — a module's render is a citation, not a copy).
-#define TOGA_EFFECT_COUNT  72   // == grid TOTAL_ANIMS / module MOD_MODE_COUNT (0..71)
+#define TOGA_EFFECT_COUNT 107   // == grid TOTAL_ANIMS / module MOD_MODE_COUNT (0..106)
 #define TOGA_EFFECT_OFF    200  // pinned blackout (replaces the old effect id 8 "off")
 #define TOGA_EFFECT_FOLLOW 255  // not a pinned effect: derive it from the grid's mode
 #define TOGA_CFG_KEEP      254  // TogaModCfgMsg: leave this field as it is
@@ -185,7 +185,14 @@ static inline const char* togaEffectName(uint8_t e){
     "auroraCurtains","radar","sineWaves","rocketFire","warningLight","aliens","rain2","levitate",
     "confetti","spiralEject","clouds3d","pulseHeart","rainUp","starsFlying","firework2",
     "vuColumns","vuGrid","superHexagon","squareImplode","plasmaLightning",
-    "neonShockwaves","emberVortex","prismShards","nebulaBreath"
+    "neonShockwaves","emberVortex","prismShards","nebulaBreath",
+    "jellyfishBloom","kaleidoWheel","lightningTree","dnaHelix","fireflies",
+    "blackHoleAccretion","oceanCaustics","phoenixRise","clockworkGears","magneticDipole",
+    "quantumOrbitals","serpentNest","crystalGrowth","solarFlare","mandalaBloom",
+    "inkBloom","electricEel","galaxyCollision","gyroscope","doublePendulum",
+    "pulsarBeacon","wormholeThroat","spirographArms","honeycombPulse","turbineBlades",
+    "mantaGlide","plasmaGlobe","supernovaShell","cometSwarm","roseWindow",
+    "tesseract","torusKnot","morphSwarm","gravitationalLens","celestialDragon"
   };
   if(e < TOGA_EFFECT_COUNT)    return N[e];
   if(e == TOGA_EFFECT_OFF)     return "aus";
@@ -232,7 +239,7 @@ static inline const char* togaEffectName(uint8_t e){
 // State, not an event: it rides along on the heartbeat like the flags do, so a
 // lost packet costs at most 100ms and there is nothing to re-send or ack.
 #define TOGA_AUTO_OFF     0
-#define TOGA_AUTO_COUNT   4
+#define TOGA_AUTO_COUNT   5
 
 // Each mood's OWN hue — what it looks like at Colour=0. Both callers add the
 // grid's live tint (hueBase+hueAuto) on top, so the readout wears the colour
@@ -248,8 +255,8 @@ static inline const char* togaEffectName(uint8_t e){
 // 6-region HSV, the grid uses FastLED's rainbow), so these four are close but
 // never pixel-identical. They were picked to land on the same four colours in
 // both; re-check both ends when changing one.
-//                                                     calm space party show
-static const uint8_t TOGA_AUTO_HUE[TOGA_AUTO_COUNT] = { 140,  195,   10,  85 };
+//                                                     calm space party show spezial
+static const uint8_t TOGA_AUTO_HUE[TOGA_AUTO_COUNT] = { 140,  195,   10,  85,  220 };
 
 static const uint8_t TOGA_BCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 
@@ -688,8 +695,9 @@ static inline bool togaParseModCfg(const uint8_t* data, int len, const uint8_t m
 //  already runs on. Associating therefore moves nobody anywhere, and every node
 //  can be on the network AND on the bus at the same time.
 //
-//  That is what makes OTA free: no trigger, no leaving the show (see toga_ota.h).
-//  It also means the installation needs no router at all — plug it in anywhere.
+//  That is what lets the controller/module web UIs be reachable over the same AP
+//  the bus rides on. It also means the installation needs no router at all — plug
+//  it in anywhere.
 // ══════════════════════════════════════════════════════════════════════
 #define TOGA_AP_SSID  "togacontroller"   // the controller's AP; grid + modules join it.
                                           // (Distinct from the module phone-hotspot
@@ -720,10 +728,21 @@ static inline void togaApBegin(){
   esp_wifi_set_ps(WIFI_PS_NONE);
 }
 
+// A module is one of N, so it wears the last three bytes of its own MAC as its
+// network identity — the WiFi hostname and the mDNS name of its web UI, and the
+// identity it already announces in its hello. Must be unique per board or mDNS
+// collides. (Grid and controller are singletons and get fixed names.)
+static inline const char* togaModuleHost(){
+  static char h[20];
+  uint8_t m[6]; WiFi.macAddress(m);
+  snprintf(h, sizeof(h), "toga-mod-%02x%02x%02x", m[3], m[4], m[5]);
+  return h;
+}
+
 // EVERYONE ELSE. Call BEFORE esp_now_init().
 //
-// hostname is how this board is identified on the network and by OTA — it must
-// be unique per board (see togaOtaHost* in toga_ota.h).
+// hostname is how this board is identified on the network — it must be unique
+// per board (see togaModuleHost above for how modules derive theirs).
 static inline void togaWifiBegin(const char* hostname){
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);       // broadcast is never retried — don't sleep through it

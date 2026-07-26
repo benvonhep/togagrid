@@ -32,8 +32,7 @@ sendet. Quellen: [`controller/controller.ino`](controller/controller.ino),
 **Alle 16 Tasten sind belegt.** Taste **4** ist jetzt **Speed-Sweep** (Animations-
 Geschwindigkeit fährt automatisch ein min→max→min-Dreieck), Taste **10** ist jetzt
 **Strobe-Speed** (globaler Strobe-Takt für alle drei Strobes). Taste **6** =
-**Blackout**, Taste **5** = **Modul-Spot** (alle unten beschrieben). OTA braucht
-keine Taste — es läuft dauerhaft ohne Trigger (Abschnitt 9).
+**Blackout**, Taste **5** = **Modul-Spot** (alle unten beschrieben).
 
 ### Navigation
 
@@ -433,7 +432,7 @@ Modul selbst durch eine Auswahl wechseln (~14 s, mit der Geschwindigkeit skalier
 Alles per Serial (`local`/`auto`/`color`) **oder** in der Web-UI: pro Modul ein
 gruppiertes **Effekt**-Menü (Auto-Tanz · Standalone · folgt Grid · Grid-Modi) und
 eine **Farb**-Reihe. Die Auswahl liegt im NVS und übersteht einen Neustart. Ein
-Modul ohne Controller (Notmodus, siehe [Abschnitt 9](#9-ota--firmware-über-die-luft))
+Modul ohne Controller (Notmodus, siehe [Abschnitt 9](#9-firmware-flashen--netz))
 serviert dieselbe Seite selbst — so lässt sich ein einzelner Streifen komplett
 ohne Grid einrichten.
 
@@ -493,15 +492,18 @@ Gepinnt und nicht verhandelbar: **FastLED 3.6.0**, **esp32-core 2.0.17**,
 Partition **min_spiffs**. FastLED 3.10.x bricht ESP-NOW, core 3.x ändert die
 Empfangs-Callback-Signatur — beides ist mit `#error` abgesichert.
 
-**Warum `min_spiffs` und nicht mehr `huge_app`:** OTA braucht **zwei**
-App-Partitionen, zwischen denen umgeschaltet wird. `huge_app` hat nur eine
-(`app0`, 3 MB) — damit ist OTA schlicht unmöglich, egal wie man es anstellt.
-`min_spiffs` hat `app0`+`app1` à 1,875 MB; der größte Sketch (Grid) füllt davon
-46 %. SPIFFS schrumpft dabei, was nichts kostet: kein Sketch benutzt es.
+**Warum weiter `min_spiffs`:** die Boards laufen schon damit, und das Schema
+beizubehalten heißt, dass niemand neu partitionieren muss. Der größte Sketch
+(Grid) füllt nur ~46 % eines `min_spiffs`-App-Slots (1,875 MB), Platz ist also
+reichlich. `huge_app` (ein 3-MB-Slot) ginge inzwischen auch — OTA hatte die zwei
+Slots gebraucht, und OTA ist raus — würde aber einen einmaligen USB-Reflash jedes
+Boards erzwingen, ohne echten Gewinn. Also bleibt es bei `min_spiffs`.
 
 ```bash
 FQBN="esp32:esp32:esp32:PartitionScheme=min_spiffs"
 arduino-cli compile --fqbn "$FQBN" --libraries ./libraries --upload -p <port> grid/
+# Gleiches Muster für controller/ und module/.
+# Hängt der Upload bei 921600, ans FQBN ",UploadSpeed=115200" anhängen.
 ```
 
 Wird das Wire-Format geändert (`TOGA_VERSION`, aktuell **4** — v4 brachte
@@ -509,52 +511,29 @@ Batterie-Telemetrie im Hello + `battMon`-Toggle im ModCfg), müssen **Grid,
 Control Unit und alle Module zusammen** neu geflasht werden. Ein Knoten auf
 einer alten Version ist für alle anderen still unsichtbar.
 
-## 9. OTA — Firmware über die Luft
+## 9. Firmware flashen & Netz
 
-Nach **einem** letzten USB-Durchgang (siehe `min_spiffs` oben) läuft jedes
-Update über WLAN — **jederzeit, ohne Trigger, ohne dass ein Knoten die Show
-verlässt**.
+**Geflasht wird über USB** — Sketch am Kabel, mit dem `arduino-cli`-Befehl aus
+Abschnitt oben (`--upload -p <port>`). Jedes Board einzeln: `grid/`,
+`controller/` und jedes `module/`.
 
-**Warum das geht:** die **Control Unit macht den AccessPoint auf** —
-SSID `togalights`, Passwort `andmagic`, fest auf **Kanal 1**. Und Kanal 1 ist
-`TOGA_CHANNEL`, also genau der Kanal, auf dem der ESP-NOW-Bus ohnehin läuft.
-Ein ESP32 hat nur ein Radio: sich bei einem *Router* anzumelden würde es auf
-dessen Kanal zerren und den Knoten still vom Bus nehmen. Bei **unserem** AP
-passiert das nicht — er steht schon auf dem richtigen Kanal. Jeder Knoten ist
-deshalb gleichzeitig im Netz **und** auf dem Bus.
+Der NVS bleibt beim Flashen erhalten (der Upload schreibt die Config-Partition
+nicht an). Aber: **niemals `esptool erase_flash`**, das nimmt ihn mit — Modul-
+Geometrie und Grid-Einstellungen wären weg.
 
-Zwei Nebeneffekte, beide gut: die Anlage braucht **überhaupt keinen Router**
-mehr, und jedes Gerät ist unter seinem eigenen Namen erreichbar.
+**Netz & Namen.** Die **Control Unit macht den AccessPoint auf** — SSID
+`togalights`, Passwort `andmagic`, fest auf **Kanal 1** = `TOGA_CHANNEL`, dem
+Kanal, auf dem der ESP-NOW-Bus ohnehin läuft. Ein ESP32 hat nur ein Radio: sich
+bei einem *Router* anzumelden würde es auf dessen Kanal zerren und den Knoten
+still vom Bus nehmen. Bei **unserem** AP passiert das nicht — er steht schon auf
+dem richtigen Kanal. Jeder Knoten ist deshalb gleichzeitig im Netz **und** auf
+dem Bus, und die Anlage braucht **überhaupt keinen Router**.
+
+Darüber sind die Weboberflächen unter ihrem eigenen Namen erreichbar:
 
 | Knoten | Hostname |
 |--------|----------|
-| Grid | `toga-grid.local` |
-| Control Unit | `toga-ctl.local` |
-| Modul | `toga-mod-<letzte 3 MAC-Bytes>.local` (z.B. `toga-mod-7d75c0.local`) |
+| Control Unit (Modul-Manager) | `toga-ctl.local` (oder `http://192.168.4.1/`) |
+| Modul (Notmodus-Seite) | `toga-mod-<letzte 3 MAC-Bytes>.local` (z.B. `toga-mod-7d75c0.local`) |
 
-**Flashen** (der Mac muss dafür in `togalights` sein — das Netz hat kein
-Internet, das ist Absicht):
-```bash
-./flash-ota.sh module toga-mod-7d75c0.local
-./flash-ota.sh grid   toga-grid.local
-./flash-ota.sh controller toga-ctl.local
-```
-macOS fragt beim ersten Mal, ob `python3` eingehende Verbindungen annehmen darf
-— das muss erlaubt werden, sonst hängt der Upload bei „Sending invitation" (das
-ESP verbindet sich zurück zum Rechner).
-
-Der NVS bleibt bei alldem erhalten — er liegt in beiden Partitionsschemata an
-derselben Adresse, und der Upload schreibt sie nicht an. Aber: **niemals
-`esptool erase_flash`**, das nimmt ihn mit.
-
-**Sicherheitsnetz:** Grid, Control Unit und Module halten ein frisches Image
-zuerst auf Probe (`verifyRollbackLater`) und segnen es erst ab, wenn sie sich
-bewährt haben — 60 s Betrieb **plus** ein Paket vom Bus, spätestens aber nach
-5 min. Stürzt das neue Image vorher ab oder bootloopt es, holt der Bootloader
-von allein das alte zurück. Keine Leiter. **Grenze:** das fängt Abstürze, keine
-Geschmacksfragen — ein Image, das sauber bootet und Unsinn rendert, segnet sich
-selbst ab. Deshalb archiviert `flash-ota.sh` jede geflashte Binary.
-
-**Wenn die Control Unit aus ist**, gibt es keinen AP und damit kein OTA. Der Bus
-läuft trotzdem weiter (alle Knoten sind auf Kanal 1 gepinnt, dafür braucht es
-keine Anmeldung) — nur flashen kann man dann nicht.
+Das Grid selbst hat keine Weboberfläche und keinen mDNS-Namen.

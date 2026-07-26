@@ -23,19 +23,19 @@ Controller ──broadcast TogaModCfgMsg (on demand, addressed by MAC)─► one
 
 **Core invariant:** commands are *relative steps* (mode +1, brightness −5…). **Only the grid applies them.** The grid then broadcasts its **absolute** state; everyone else mirrors it, so drift is structurally impossible — a node that misses packets or boots late re-locks within ~200 ms.
 
-**Why the controller hosts the AP:** an ESP32 has one radio; joining a WLAN drags it to that WLAN's channel. So no node may join a router. The controller runs the AP pinned to channel 1 = the ESP-NOW bus channel, so every node is simultaneously associated *and* on the bus → every node is OTA-flashable mid-show, and the installation needs no router.
+**Why the controller hosts the AP:** an ESP32 has one radio; joining a WLAN drags it to that WLAN's channel. So no node may join a router. The controller runs the AP pinned to channel 1 = the ESP-NOW bus channel, so every node is simultaneously associated *and* on the bus → the controller/module web UIs are reachable over the same AP the bus rides on, and the installation needs no router.
 
 **Repo root:** `/Users/benvonweb/Documents/benvonhep/togagrid/jogi`
 
 **Directory layout:**
 ```
 jogi/
-├── BEFEHLE.md, TODO.md, flash-ota.sh, licht todos 16jul.rtf
+├── BEFEHLE.md, TODO.md, licht todos 16jul.rtf
 ├── controller/  controller.ino, TASTENBELEGUNG.md
 ├── grid/        grid.ino, grid_config.h, grid_beat.h, grid_draw.h, grid_text.h, grid_protos.h
 │   └── animations/  anim_field.h, anim_geometry.h, anim_life.h, anim_games.h, anim_faces.h, anim_new.h
 ├── module/      module.ino, module_config.h, module_effects.h
-└── libraries/TogaProto/  library.properties, src/toga_proto.h, src/toga_ota.h
+└── libraries/TogaProto/  library.properties, src/toga_proto.h
 ```
 No PlatformIO/Makefile/CMake. Build is **arduino-cli only**.
 
@@ -93,40 +93,27 @@ else      bufIdx = forward ? (135+led) : (257-led);   // even row offset embeds 
 
 **Pinned stack — enforced with `#error` at compile time:**
 - **FastLED 3.6.0 exactly.** `grid_config.h` and `module_config.h`: `#if FASTLED_VERSION != 3006000 #error`. 3.10.x silently breaks ESP-NOW/the controller link.
-- **arduino-esp32 core 2.0.17.** `toga_proto.h`: `#if ESP_ARDUINO_VERSION_MAJOR >= 3 #error` (core 3.x changed the ESP-NOW recv callback signature). Core path hardcoded in `flash-ota.sh`: `~/Library/Arduino15/packages/esp32/hardware/esp32/2.0.17`.
+- **arduino-esp32 core 2.0.17.** `toga_proto.h`: `#if ESP_ARDUINO_VERSION_MAJOR >= 3 #error` (core 3.x changed the ESP-NOW recv callback signature). Core lives at `~/Library/Arduino15/packages/esp32/hardware/esp32/2.0.17`.
 - **Board/FQBN:** `esp32:esp32:esp32` (ESP32 Dev Module).
-- **Partition scheme: `min_spiffs`** (`PartitionScheme=min_spiffs`) — gives two app slots (`app0`+`app1`, 1.875 MB each) so OTA works. `huge_app` has ONE app slot and disables OTA — **do not use huge_app**. (Grid, the largest sketch, fills ~46% of one min_spiffs app slot. SPIFFS shrinks harmlessly — no sketch uses it.)
+- **Partition scheme: `min_spiffs`** (`PartitionScheme=min_spiffs`) — kept so existing boards need no re-partition and NVS stays put. Grid, the largest sketch, fills ~46% of one min_spiffs app slot, so there is plenty of room. (OTA once needed the two app slots for its A/B swap; OTA is gone, so `huge_app`'s single 3 MB slot would work too — but switching would force a one-time USB re-flash of every board for no real gain.)
+
+**Flashing is USB-only** (via `arduino-cli`, board on the cable).
 
 **One-time setup:**
 ```bash
 ln -s "$PWD/libraries/TogaProto" ~/Documents/Arduino/libraries/TogaProto
 ```
-Every board must be **USB-flashed once with min_spiffs** before OTA works:
+Build + upload each sketch (`grid/`, `controller/`, every `module/`):
 ```bash
 FQBN="esp32:esp32:esp32:PartitionScheme=min_spiffs"
 arduino-cli compile --fqbn "$FQBN" --libraries ./libraries --upload -p <port> grid/
+# If the upload hangs at 921600, append ",UploadSpeed=115200" to the FQBN.
 ```
 
-**`flash-ota.sh <sketch> <host>` (verbatim behaviour):**
-```bash
-CORE=~/Library/Arduino15/packages/esp32/hardware/esp32/2.0.17
-ESPOTA="$CORE/tools/espota.py"
-FQBN="esp32:esp32:esp32:PartitionScheme=min_spiffs"
-BUILD="/tmp/toga-build/$SKETCH"
-OTA_PASS="toga-ota"
-arduino-cli compile --fqbn "$FQBN" --libraries ./libraries --build-path "$BUILD" "$SKETCH/"
-python3 "$ESPOTA" -r -i "$HOST" -p 3232 --auth="$OTA_PASS" -f "$BUILD/$SKETCH.ino.bin"
-# archives to .ota-archive/<sketch>-<git-short-sha>[-dirty].bin
-```
-Port **3232**, auth **`toga-ota`** (= `TOGA_OTA_PASS`).
+**Flashing gotchas:**
+- **Never `esptool erase_flash`** — it wipes per-device NVS config (module geometry, grid settings). A normal sketch upload does not touch NVS.
 
-**OTA prerequisites / gotchas:**
-- Your Mac must be joined to `togalights` (no internet — intentional). The controller must be powered (it hosts the AP; without it, no AP, no OTA — but the ESP-NOW bus keeps running).
-- macOS firewall must allow incoming **python3** (the ESP connects *back* to the Mac), else it hangs at "Sending invitation".
-- **Never `esptool erase_flash`** — it wipes per-device NVS config (module geometry, grid settings). NVS sits at the same address in both partition schemes; OTA doesn't touch it.
-- OTA safety net (`toga_ota.h`): a fresh image runs on probation (`verifyRollbackLater()` returns true), self-commits after **60 s + one bus packet** (`TOGA_OTA_COMMIT_FAST_MS=60000`) or **5 min** unconditionally (`TOGA_OTA_COMMIT_MAX_MS=300000`); a crash/bootloop before that auto-rolls-back. Each sketch has `extern "C" bool verifyRollbackLater(){return true;}` below its includes, and calls `togaOtaMarkValidWhenHealthy(t, heardBus)` once per frame. This catches crashes, NOT "boots but renders garbage" — hence the binary archive.
-
-**Hostnames (mDNS + OTA):** grid `toga-grid.local`, controller `toga-ctl.local` (also serves the module UI), module `toga-mod-<last-3-MAC-bytes-hex>.local`.
+**Hostnames (mDNS, web UI):** controller `toga-ctl.local` (serves the module UI; also `http://192.168.4.1/`), module `toga-mod-<last-3-MAC-bytes-hex>.local` (its Notmodus page). The grid has no web UI and no mDNS name.
 
 **Wire-format changes:** `TOGA_VERSION` is currently **4** (v4 added battery telemetry to `TogaHelloMsg` via its reserved bytes, size unchanged, and a `battMon` toggle to `TogaModCfgMsg`, 16→18 bytes). Any change to a struct or message type requires bumping it and **reflashing grid + controller + all modules together**. A version-mismatched node is invisible to all others (or worse, its stale packet passes validation and is applied — the historical strobe-flicker bug).
 
@@ -296,19 +283,7 @@ togaWifiBegin(hostname): WiFi.mode(WIFI_STA); WiFi.setSleep(false); WiFi.setHost
                 // channel is explicit so the STA never scans (deaf to the bus otherwise); does NOT wait for assoc
 togaWifiTick(): once/loop on joiners; every 10s if !WL_CONNECTED, re-WiFi.begin(...,TOGA_CHANNEL); logs edges only
 togaAddPeer(mac): after esp_now_init(); peer channel=TOGA_CHANNEL, ifidx=WIFI_IF_STA, encrypt=false (broadcast can't encrypt)
-```
-
-## 3.5 OTA (`toga_ota.h`)
-```c
-#define TOGA_OTA_PASS "toga-ota"
-#define TOGA_OTA_PORT 3232
-togaOtaModuleHost(): "toga-mod-%02x%02x%02x" of MAC bytes [3][4][5]
-togaOtaSetup(hostname): ArduinoOTA setPort(3232)/setHostname/setPassword; begin(); (non-blocking, no assoc needed)
-togaOtaHandle(): ArduinoOTA.handle() — MUST be above every early return in loop()
-#define TOGA_OTA_COMMIT_FAST_MS  60000   // frames + a bus packet -> commit
-#define TOGA_OTA_COMMIT_MAX_MS  300000   // frames alone this long -> commit anyway
-togaOtaMarkValidWhenHealthy(t, heardBus): commits (esp_ota_mark_app_valid_cancel_rollback) once healthy
-// Each sketch needs, below its includes:  extern "C" bool verifyRollbackLater(){ return true; }
+togaModuleHost(): "toga-mod-%02x%02x%02x" of MAC bytes [3][4][5] — a module's WiFi hostname + web-UI mDNS name
 ```
 
 ---
@@ -317,11 +292,11 @@ togaOtaMarkValidWhenHealthy(t, heardBus): commits (esp_ota_mark_app_valid_cancel
 
 Sends every command to group 0 (all). Renders live "meters" on its own keys from the grid's echoed `TogaSyncMsg`. Hosts the AP.
 
-**Includes:** `Arduino.h`, `toga_proto.h`, `toga_ota.h`, `Wire.h`, `Adafruit_NeoTrellis.h`. Then `extern "C" bool verifyRollbackLater(){return true;}`.
+**Includes:** `Arduino.h`, `toga_proto.h`, `Wire.h`, `Preferences.h`, `WebServer.h`, `ESPmDNS.h`, `Adafruit_NeoTrellis.h`.
 
 **Globals:** `Adafruit_NeoTrellis trellis; #define HOLD_TO_SELECT 2000;` synced-state struct `gs` (initial `{brightness=40, animSpeed=1.0, hueBase=0,hueAuto=0,hueSpeed=0,strobeHue=0, tint=255,0,0, sCol=200,200,200, beatMs=0,beatPhase=0,beatAt=0}`); `bool btnDown[16]={}; uint32_t btnDownT[16]={};` `uint8_t autoMode=TOGA_AUTO_OFF;` `enum{ST_DEFAULT,ST_ADJUST}; int state, activeBtn=-1, activeTarget=-1, suppressBtn=-1;` repeat timers `plusPressT/minusPressT/plusRepT/minusRepT`; `volatile bool gsSyncSeen=false; uint16_t txSeq=0;` `uint32_t C(r,g,b)=trellis.pixels.Color(...)`.
 
-**setup():** `Serial.begin(115200); delay(200);` `Wire.begin();` `if(!trellis.begin()) while(1) delay(1000);` for i in 0..15 activate RISING+FALLING edges and `registerCallback(i,handleKey)`; `togaApBegin();` print AP/mac; `if(esp_now_init()!=ESP_OK) while(1)…;` `esp_now_register_recv_cb(onReceive);` `if(!togaAddPeer(TOGA_BCAST)) while(1)…;` `togaOtaSetup("toga-ctl");`
+**setup():** `Serial.begin(115200); delay(200);` `Wire.begin();` `if(!trellis.begin()) while(1) delay(1000);` for i in 0..15 activate RISING+FALLING edges and `registerCallback(i,handleKey)`; `togaApBegin();` print AP/mac; `if(esp_now_init()!=ESP_OK) while(1)…;` `esp_now_register_recv_cb(onReceive);` `if(!togaAddPeer(TOGA_BCAST)) while(1)…;` `MDNS.begin("toga-ctl"); MDNS.addService("http","tcp",80);` `server.on(...)`/`server.begin()`.
 
 **Pad rotated 90° CCW ("nach links").** The physical pad is turned, so functions sit on rotated keys. The code keeps LOGICAL numbering (table below); two arrays translate at the I/O edges: `PHYS2LOG[16]={3,7,11,15,2,6,10,14,1,5,9,13,0,4,8,12}` (in `handleKey`) and `LOG2PHYS[16]={12,8,4,0,13,9,5,1,14,10,6,2,15,11,7,3}` (in `renderLEDs`). Physical layout: `0`=Mode+, `1`=Mode−, `2`=Beat, `3`=Strobe, `7`=Mode-Strobe, `8`=Color, `9`=Hue-Speed, `11`=Castle, `12`=Auto, `13`=Brightness, `14`=Speed, `15`=Strobe-colour; free `4·5·6·10`.
 
@@ -361,17 +336,17 @@ for(i<reps) esp_now_send(TOGA_BCAST,(uint8_t*)&m,sizeof(m));
 ```
 Heartbeat every 100 ms in loop. Manual `+`/`−` mode step in DEFAULT first sets `autoMode=TOGA_AUTO_OFF` (so the same packet carries auto=off). Strobe keys (13/14/15) also send an immediate `sendCmd(0,0,0)` on both press and release edges (fast flag propagation).
 
-**onReceive():** `togaParseSync` → copy every field into `gs`; `gs.beatAt = millis()` (local); `gsSyncSeen=true` (OTA health proof).
+**onReceive():** `togaParseSync` → copy every field into `gs`; `gs.beatAt = millis()` (local); `gsSyncSeen=true` (drives the page's grid-freshness pill).
 
 **LED feedback (`renderLEDs(t)`):** blink `(t/125)%2` (~4 Hz param), slow `(t/250)%2` (~2 Hz auto). Helpers: `hsvC(h,s,v)` classic 6-region HSV; `heatCol(frac,v)=hsvC(170*(1-frac),255,v)` (blue→red meter); `paramCol(b,v)`: BRI `(bri-1)/127`, SPEED `(spd-0.1)/3.9`, HUESPEED `hueSpeed/100` → heatCol; COLOR → `rgbScale(tint,v)`; STROBEHUE → strobeCol(v). `autoCol(m,v)=hsvC(TOGA_AUTO_HUE[m-1]+gs.hueBase+gs.hueAuto,255,v)`. `beatCol(t)`: rest `C(40,0,0)`; else phase = `gs.beatPhase/255 + (t-gs.beatAt)/gs.beatMs` wrapped, value `togaBeatFactor(ph)*200`, `C(v,0,0)`. Press feedback: 15→`strobeCol(255)`, 14→full tint, 13→`C(0,140,160)`, generic→`C(70,20,0)`.
 
-**loop():** `togaOtaHandle()` every iter; heartbeat every 100 ms; `togaOtaMarkValidWhenHealthy(t,gsSyncSeen)`; `reportApClients(t)` (prints AP client count on change, ≥5 s); poll gate 20 ms → `trellis.read()`, hold-to-arm scan, +/- dispatch (priority: hold-15 gap, DEFAULT mode, ADJUST param), `renderLEDs(t)`.
+**loop():** `server.handleClient()` + `drainHellos(t)` every iter (above the poll gate, so the web UI isn't starved); heartbeat every 100 ms; `reportApClients(t)` (prints AP client count on change, ≥5 s); poll gate 20 ms → `trellis.read()`, hold-to-arm scan, +/- dispatch (priority: hold-15 gap, DEFAULT mode, ADJUST param), `renderLEDs(t)`.
 
 ---
 
 # PART 5 — GRID FIRMWARE (`grid/grid.ino` + headers)
 
-**Includes (order):** `<FastLED.h>`, `<math.h>`, `"grid_config.h"`, `"grid_beat.h"`, `<toga_ota.h>`; later `<esp_now.h>`, `<WiFi.h>`, `<Preferences.h>`; then `grid_protos.h`, `grid_draw.h`, `grid_text.h`, `animations/anim_{field,geometry,life,games,faces,new}.h`. Plus `extern "C" bool verifyRollbackLater(){return true;}`. `MY_TOGA_GROUP = TOGA_GROUP_GRID`.
+**Includes (order):** `<FastLED.h>`, `<math.h>`, `"grid_config.h"`, `"grid_beat.h"`; later `<esp_now.h>`, `<WiFi.h>`, `<Preferences.h>`; then `grid_protos.h`, `grid_draw.h`, `grid_text.h`, `animations/anim_{field,geometry,life,games,faces,new}.h`. `MY_TOGA_GROUP = TOGA_GROUP_GRID`.
 
 **Key globals:** `CRGB ledsX[6][258], ledsY[6][258];` `uint8_t gHueBase=0,gHueAuto=0,gHueSpeed=0,gStrobeHue=0;` AGC: `uint8_t gBaseBri=40; float gAgcGain=1.0; bool gAgcSnap=false;` beat: `float gBeatGlow=1.0;` ESP-NOW: `volatile TogaCmdMsg cmdQ[16]; volatile uint32_t cmdQT[16]; volatile uint8_t cmdHead,cmdTail;` `volatile bool espStrobe,espModeStrobe,espCastleStrobe; volatile uint8_t espAutoMode=0; volatile uint32_t espLastHeartbeat;` sender-MAC learn/warn state; `Preferences prefs; struct Settings cfg; bool beatDirty; uint32_t beatDirtyAt;`
 
@@ -385,8 +360,8 @@ Heartbeat every 100 ms in loop. Manual `+`/`−` mode step in DEFAULT first sets
 - BEAT_TAP(4): `beatOnTap(arrivalT)` (arrival is the phase anchor); BEAT(3): `beatSetPeriod(arg, arrivalT)`. Both set `beatDirty`.
 
 **loop() timing/flow:**
-1. `togaOtaHandle(); togaWifiTick();`
-2. `senderAlive = espLastHeartbeat>0 && (t-espLastHeartbeat)<400;` `togaOtaMarkValidWhenHealthy(t,senderAlive);`
+1. `togaWifiTick();`
+2. `senderAlive = espLastHeartbeat>0 && (t-espLastHeartbeat)<400;`
 3. Button-15 strobe edge detection (runs **before** the FPS cap): on rising, save `preStrobeAnim/preStrobeBri`, pick `nextStrobeLook()`; on falling, restore and clear.
 4. Drain command ring: `applyCommand(m, cmdQT[tail])`.
 5. `beatTick(t)` (lone-tap-off) → sets beatDirty.
@@ -569,7 +544,7 @@ ledXY(x,y): bounds-checked → fx[XY] or gTrash
 ```
 **addLedsForPin(pin):** switch over 4/5/16/17/18/21 → `FastLED.addLeds<WS2812B, pin, GRB>(leds, gNumLeds)`; `setCorrection(0xffe0b0)`; false on unknown.
 
-**setup():** Serial 115200; `pinMode(LED_BLUE=2,OUTPUT)`; `loadConfig()`; `addLedsForPin(cfgPin)` (fallback 4); `setBrightness(gBri)`; clear both buffers + show; `initStarfield()`; seed glimmer; `togaWifiBegin(togaOtaModuleHost())`; `WiFi.macAddress(gMyMac)` **before** callback; `esp_now_init()`/`register_recv_cb(onReceive)` (fatal on fail); `togaAddPeer(TOGA_BCAST)` (non-fatal); `togaOtaSetup(togaOtaModuleHost())`.
+**setup():** Serial 115200; `pinMode(LED_BLUE=2,OUTPUT)`; `loadConfig()`; `addLedsForPin(cfgPin)` (fallback 4); `setBrightness(gBri)`; clear both buffers + show; `initStarfield()`; seed glimmer; `togaWifiBegin(togaModuleHost())`; `WiFi.macAddress(gMyMac)` **before** callback; `esp_now_init()`/`register_recv_cb(onReceive)` (fatal on fail); `togaAddPeer(TOGA_BCAST)` (non-fatal). (mDNS is started later by `netTick`/`fallbackTick` via `mdnsAs(togaModuleHost())`.)
 
 **onReceive() (WiFi task, buffers only):** `TogaCmdMsg` (group-filtered) → set 3 strobe flags + `espLastHeartbeat` immediately; `TogaSyncMsg` → `syncBuf; syncPending=true` (deferred); `TogaModCfgMsg` (MAC-matched) → `cfgBuf; cfgPending=true` (deferred, writes NVS).
 
@@ -579,7 +554,7 @@ ledXY(x,y): bounds-checked → fx[XY] or gTrash
 
 **activeEffect():** `gEffectPin<9 ? gEffectPin : (gAnimIndex % 8)` — following maps the grid's mode onto 8 lit effects; the 9th (powersave/off, id 8) is EXCLUDED from rotation (reachable only by pinning `effect 8`).
 
-**loop():** `serialPoll(); togaOtaHandle(); togaWifiTick();` take pending sync/cfg; `senderAlive = espLastHeartbeat>0 && (t-espLastHeartbeat)<400`; `digitalWrite(LED_BLUE, senderAlive)`; `sendHello(t,senderAlive)`; `togaOtaMarkValidWhenHealthy(t,senderAlive)`; strobe edge tracking. FPS cap `if(!strobeActive && t-lastFrame<FRAME_MS(20)) return`. Beat-glow (real time): `gBeatPhase += frameDt/gBeatPeriod; gBeatGlow=togaBeatFactor(gBeatPhase)`. Hue rotate (real time) `hueAcc += togaHueRate(gHueSpeed)*frameDt; gHueAuto=(uint8_t)hueAcc`. Priority: (1) button-15 strobe overrides all (`flashSolid(white/CHSV(strobeHue), STROBE_BRI=255, cap STROBE_MAX_BRI=178)`); (2) castle-strobe → flash tint `CHSV(gHueBase+gHueAuto,255,220)` on/off 40 ms (no font); (3) mode-strobe → blink current effect brighter (×7/4), on/off 40 ms; (4) normal effect. Effect stepping via **integer virtual clock**: `gStepAcc += frameDt*gAnimSpeed/FRAME_MS; steps=(int)gStepAcc` (cap 4); each step `gVirtMs+=20; gTimebase=t-gVirtMs; gPatterns[activeEffect()]()`. `showModule(modeStrobeHeld ? gBri*7/4 : gBri)` every frame.
+**loop():** `serialPoll(); netTick();` take pending sync/cfg; `senderAlive = espLastHeartbeat>0 && (t-espLastHeartbeat)<400`; `digitalWrite(LED_BLUE, senderAlive)`; `sendHello(t,senderAlive)`; strobe edge tracking. FPS cap `if(!strobeActive && t-lastFrame<FRAME_MS(20)) return`. Beat-glow (real time): `gBeatPhase += frameDt/gBeatPeriod; gBeatGlow=togaBeatFactor(gBeatPhase)`. Hue rotate (real time) `hueAcc += togaHueRate(gHueSpeed)*frameDt; gHueAuto=(uint8_t)hueAcc`. Priority: (1) button-15 strobe overrides all (`flashSolid(white/CHSV(strobeHue), STROBE_BRI=255, cap STROBE_MAX_BRI=178)`); (2) castle-strobe → flash tint `CHSV(gHueBase+gHueAuto,255,220)` on/off 40 ms (no font); (3) mode-strobe → blink current effect brighter (×7/4), on/off 40 ms; (4) normal effect. Effect stepping via **integer virtual clock**: `gStepAcc += frameDt*gAnimSpeed/FRAME_MS; steps=(int)gStepAcc` (cap 4); each step `gVirtMs+=20; gTimebase=t-gVirtMs; gPatterns[activeEffect()]()`. `showModule(modeStrobeHeld ? gBri*7/4 : gBri)` every frame.
 
 **showModule(baseBri):** rotate fx→leds by `gHueBase+gHueAuto` (memcpy fast path if off); `FastLED.setBrightness(constrain(round(baseBri * gGain/100 * gBeatGlow), 1, 128))`; show.
 
@@ -687,7 +662,7 @@ Full 16-key map is in Part 4. Parameters: Brightness ±5 (1–128, saved per mod
 
 ## Critical constraints (read before changing anything)
 1. **Pinned stack enforced by `#error`:** FastLED **3.6.0** + arduino-esp32 **2.0.17**. Do not upgrade.
-2. **Partition scheme is `min_spiffs`** (two app slots for OTA), NOT `huge_app`.
+2. **Partition scheme is `min_spiffs`** — kept so boards need no re-partition (grid fills ~46% of one slot). `huge_app` would also fit now that OTA is gone, but switching forces a USB re-flash of every board for no gain.
 3. **`TOGA_VERSION` = 4.** Any wire-format change → reflash **all three node types together** (grid + controller + every module).
 4. **Never `erase_flash`** (wipes per-device NVS).
 5. **Everything on WiFi channel 1 / no router.** The controller's AP handles this.

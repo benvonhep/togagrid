@@ -250,41 +250,46 @@ static float eyeGx,eyeGy,eyeTx,eyeTy; static uint32_t eyeMoveT,eyeBlinkT; static
 // Eye colour at world point (x,y). Returns false if this LED stays dark.
 bool eyePixel(float x,float y,float gx,float gy,float bp,CRGB &out){
   const float A=56.0f,B=27.0f,RI=13.5f,RP=6.5f,SOFT=5.0f;       // larger almond, bigger pupil
-  float ax=x/A, qx=1.0f-ax*ax; if(qx<=-0.06f) return false;      // outside (margin keeps the outline)
+  float ax=x/A, qx=1.0f-ax*ax; if(qx<=-0.12f) return false;      // wider margin → room for a THICKER outline
   float sq=sqrtf(qx>0.0f?qx:0.0f);
   float e=ax*ax+(y/B)*(y/B);
-  float outF=constrain(1.0f-fabsf(e-1.0f)/0.16f,0.0f,1.0f);      // almond outline — always visible
+  float outF=constrain(1.0f-fabsf(e-1.0f)/0.26f,0.0f,1.0f);      // MUCH thicker almond outline
   float openTop=(2.0f*bp-1.0f)*B*sq, openBot=B*sq;               // upper lid sweeps down to close
   float vis=constrain((y-openTop)/SOFT,0.0f,1.0f)*constrain((openBot-y)/SOFT,0.0f,1.0f);
-  float scl=constrain((0.94f-e)/0.12f,0.0f,1.0f)*vis;           // sclera fill (hidden by the lid)
+  float scl=constrain((0.84f-e)/0.14f,0.0f,1.0f)*vis;           // sclera fill sits INSIDE the thick rim
   // ── 3D sphere shading: bright domed centre, dim rim + fixed upper-left catch-light ──
-  float dome=0.40f+0.60f*sqrtf(constrain(1.0f-e,0.0f,1.0f));    // eyeball curvature falloff
-  float hx=x+12.0f, hy=y+12.0f;                                 // specular near the upper-left
-  float spec=constrain(1.0f-sqrtf(hx*hx+hy*hy)/12.0f,0.0f,1.0f); spec*=spec;
+  float dome=0.18f+0.82f*sqrtf(constrain(1.0f-e,0.0f,1.0f));    // stronger centre→rim falloff = rounder ball
+  float hx=x+14.0f, hy=y+12.0f;                                 // specular near the upper-left
+  float spec=constrain(1.0f-sqrtf(hx*hx+hy*hy)/13.0f,0.0f,1.0f); spec*=spec;
   float dg=sqrtf((x-gx)*(x-gx)+(y-gy)*(y-gy));
-  float irisF=constrain((RI-dg)/2.5f,0.0f,1.0f);               // crisper iris edge → more contrast
-  float pupF =constrain((RP-dg)/2.5f,0.0f,1.0f);
+  float irisF=constrain((RI-dg)/2.0f,0.0f,1.0f);               // crisp iris edge → more contrast
+  float pupF =constrain((RP-dg)/2.0f,0.0f,1.0f);
   float wF=fmaxf(outF, scl);
   if(wF<0.02f && vis<0.02f) return false;
   // ── sclera WHITE: brightest at the domed CENTRE (dome≈1), dimming toward the
-  //    contour (dome→0.40 at the rim); a faint upper-left catch-light on top ──
-  float scv=constrain(scl*dome,0.0f,1.0f);
-  CRGB c((uint8_t)(scv*175.0f),(uint8_t)(scv*172.0f),(uint8_t)(scv*150.0f));   // warm white
-  c.r=qadd8(c.r,(uint8_t)(scl*spec*70.0f)); c.g=qadd8(c.g,(uint8_t)(scl*spec*70.0f)); c.b=qadd8(c.b,(uint8_t)(scl*spec*55.0f));
-  // ── CONTOUR: luminous azure rim, strongly distinct from AND brighter than the
-  //    white (peak 255 vs white ~175); lerped in so it dominates the outline ──
+  //    contour; an extra ambient-occlusion darkening where it meets the rim gives
+  //    the eyeball a rounded, sunken-into-the-lid 3D look ──
+  float ao=constrain((e-0.55f)/0.30f,0.0f,1.0f);               // 0 at centre → 1 near the outline
+  float scv=constrain(scl*dome*(1.0f-0.55f*ao),0.0f,1.0f);
+  CRGB c((uint8_t)(scv*190.0f),(uint8_t)(scv*187.0f),(uint8_t)(scv*165.0f));   // warm white
+  c.r=qadd8(c.r,(uint8_t)(scl*spec*85.0f)); c.g=qadd8(c.g,(uint8_t)(scl*spec*85.0f)); c.b=qadd8(c.b,(uint8_t)(scl*spec*65.0f));
+  // ── CONTOUR: bold luminous VIOLET rim — a clearly different hue from the warm
+  //    white AND the teal iris, thick and the brightest element so it frames ──
   float of=constrain(outF,0.0f,1.0f);
-  CRGB rim(70,150,255);
+  CRGB rim(150,40,240);
   c.r=(uint8_t)(c.r*(1.0f-of)+rim.r*of); c.g=(uint8_t)(c.g*(1.0f-of)+rim.g*of); c.b=(uint8_t)(c.b*(1.0f-of)+rim.b*of);
   // Iris REPLACES the sclera (lerp, not additive) so its saturated colour keeps
   // full contrast against the white instead of washing out; pupil darkens centre.
   if(irisF>0.001f && vis>0.001f){
-    float ishade=0.70f+0.30f*constrain((RI-dg)/RI,0.0f,1.0f);   // bright, flat shading so the iris reads > white
-    CRGB iris=CRGB(20,230,175); iris.nscale8_video((uint8_t)(ishade*255.0f));  // bright emerald-teal (>white)
+    float ir=constrain(dg/RI,0.0f,1.0f);
+    float ishade=0.50f+0.50f*(1.0f-ir*ir);                      // domed iris: bright centre, shaded edge (3D)
+    CRGB iris=CRGB(15,225,185); iris.nscale8_video((uint8_t)(ishade*255.0f));  // bright emerald-teal (>white)
     float mix=irisF*vis;
     c.r=(uint8_t)(c.r*(1.0f-mix)+iris.r*mix);
     c.g=(uint8_t)(c.g*(1.0f-mix)+iris.g*mix);
     c.b=(uint8_t)(c.b*(1.0f-mix)+iris.b*mix);
+    float limbal=constrain(1.0f-fabsf(dg-RI)/2.2f,0.0f,1.0f)*vis;   // DARK limbal ring at the iris edge → pops off white
+    c.r=(uint8_t)(c.r*(1.0f-0.80f*limbal)); c.g=(uint8_t)(c.g*(1.0f-0.80f*limbal)); c.b=(uint8_t)(c.b*(1.0f-0.80f*limbal));
     float pm=pupF*vis;                                          // near-black pupil
     c.r=(uint8_t)(c.r*(1.0f-pm)); c.g=(uint8_t)(c.g*(1.0f-pm)); c.b=(uint8_t)(c.b*(1.0f-pm));
     float cl=constrain(1.0f-sqrtf((x-gx+4.0f)*(x-gx+4.0f)+(y-gy+4.0f)*(y-gy+4.0f))/3.0f,0.0f,1.0f)*vis;

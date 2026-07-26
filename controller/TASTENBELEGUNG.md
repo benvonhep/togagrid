@@ -60,10 +60,10 @@ Befehle per ESP-NOW an das Grid. Quelle: [`controller.ino`](controller.ino).
 Bewusst eine Modifier-Kombi auf einer **belegten** Taste, damit 4 · 5 · 10
 frei bleiben (6 ist jetzt Blackout).
 
-**OTA braucht keine Kombi.** Diese Einheit macht den AccessPoint `togalights`
-auf Kanal 1 auf — dem Kanal, auf dem der ESP-NOW-Bus ohnehin läuft. Jeder Knoten
-ist damit gleichzeitig im Netz und auf dem Bus und jederzeit flashbar, ohne die
-Show zu verlassen (Details: [BEFEHLE.md](../BEFEHLE.md) §9).
+**Netz.** Diese Einheit macht den AccessPoint `togalights` auf Kanal 1 auf — dem
+Kanal, auf dem der ESP-NOW-Bus ohnehin läuft. Jeder Knoten ist damit gleichzeitig
+im Netz und auf dem Bus, und die Weboberflächen (Modul-Manager, Notmodus-Seiten)
+sind über denselben AP erreichbar (Details: [BEFEHLE.md](../BEFEHLE.md) §9).
 
 ## Bedienmodell
 

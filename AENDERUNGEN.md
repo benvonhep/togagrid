@@ -4,14 +4,15 @@
 
 > ⚠️ **GANZE FLOTTE NEU FLASHEN** (Grid **+** Controller **+** ALLE Module). Bei
 > gemischten Versionen werden nicht-passende Knoten nicht gehört. Alle drei Sketches
-> kompilieren sauber (Grid/Modul/Controller je ~45 % Flash). Nach OTA in der Web-UI
-> die **Versions-Pills** prüfen.
+> kompilieren sauber (Grid/Modul/Controller je ~45 % Flash). Nach dem Flashen in der
+> Web-UI die **Versions-Pills** prüfen.
 
-**Flash-Befehle** (Mac im `togalights`-WLAN, Controller muss an sein):
+**Flash-Befehle** (per USB, Board am Kabel):
 ```
-./flash-ota.sh grid       toga-grid.local
-./flash-ota.sh controller toga-ctl.local
-./flash-ota.sh module     toga-mod-XXXXXX.local     # für JEDES Modul
+FQBN="esp32:esp32:esp32:PartitionScheme=min_spiffs"
+arduino-cli compile --fqbn "$FQBN" --libraries ./libraries --upload -p <port> grid/
+arduino-cli compile --fqbn "$FQBN" --libraries ./libraries --upload -p <port> controller/
+arduino-cli compile --fqbn "$FQBN" --libraries ./libraries --upload -p <port> module/   # für JEDES Modul
 ```
 
 ---

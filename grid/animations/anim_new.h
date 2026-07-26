@@ -290,10 +290,14 @@ void anim_pulseHeart(uint32_t at){
       // world +y renders DOWNWARD on the wall, so negate y to flip the classic
       // heart curve upright: two lobes on TOP, pointed cusp at the BOTTOM.
       float x=(pass?other:base)*sc, y=-((pass?base:other)*sc) - 0.2f;
-      float xx=x*x,yy=y*y; float h=(xx+yy-1.0f); float f3=h*h*h-1.3f*xx*y*yy;  // <0 inside; 1.3 deepens the top notch
-      float v=f3<0?1.0f:constrain(1.0f-f3*5.0f,0.0f,1.0f);                 // soft anti-aliased edge
-      if(v>0.03f){ uint8_t sat=(uint8_t)(240-40.0f*(1.0f-v));             // edge blushes lighter
-        fxAdd(pass?false:true,s+1,n,CRGB(CHSV(0,sat,(uint8_t)(v*(150+beat*105)))),1.0f); }
+      float xx=x*x,yy=y*y; float h=(xx+yy-1.0f); float f3=h*h*h-1.6f*xx*y*yy;  // <0 inside; 1.6 = deeper top notch → the two lobes read
+      float fill=f3<0?1.0f:constrain(1.0f-f3*5.0f,0.0f,1.0f);              // soft anti-aliased body
+      float rim=f3<0?constrain(1.0f+f3/0.55f,0.0f,1.0f):0.0f;             // bright band hugging the INNER edge (keeps the top notch crisp)
+      if(fill>0.03f||rim>0.03f){
+        float bri=fill*(70.0f+beat*45.0f) + rim*rim*(150.0f+beat*95.0f);  // dim body + sharp bright outline traces the whole silhouette
+        bri=constrain(bri,0.0f,255.0f);
+        uint8_t sat=(uint8_t)(255.0f-90.0f*rim*rim);                      // outline blushes pinker so the shape pops
+        fxAdd(pass?false:true,s+1,n,CRGB(CHSV(0,sat,(uint8_t)bri)),1.0f); }
     } }
   showGrid();
 }

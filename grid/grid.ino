@@ -5,13 +5,6 @@
 // near the top of the sketch and they have to see these types first.
 #include "grid_config.h"     // all tunable constants: hardware, pins, brightness, AGC, geometry
 #include "grid_beat.h"       // tap-tempo tracker (button 11 -> beatFactor())
-#include <toga_ota.h>        // always-on firmware update over the AP; see loop()
-
-// This is the board on a wall. Keep a freshly OTA-ed image on probation until it
-// has proven itself, instead of letting initArduino() bless it before setup()
-// runs — that is the difference between a bad flash self-healing and a ladder.
-// extern "C" is mandatory; see the long note in toga_ota.h.
-extern "C" bool verifyRollbackLater() { return true; }
 
 CRGB ledsX[NUM_ELEC][LEDS_PER_STRIP];
 CRGB ledsY[NUM_ELEC][LEDS_PER_STRIP];
@@ -109,18 +102,76 @@ extern uint32_t overlayUntil;
 void drawNumberTopRight(uint32_t t);
 bool gOverlayPainted=false;   // did showGrid() paint it this frame?
 
+// ── Bloom / shine ──────────────────────────────────────────────────────────
+// Spills a fraction of every lit LED onto its two strip-neighbours, giving the
+// hard-pixel legacy modes the same soft glowing "shine" the fx-based modes get
+// for free from their anti-aliasing. Blurs ALONG each physical strip only: each
+// electrode buffer holds two contiguous active regions ([0..120] and [136..256],
+// the two strips it drives) separated by dead spacer LEDs — clamp at the region
+// edges so light never bleeds across a strip or into a spacer. Runs before the
+// hue/AGC pass (so the AGC re-normalises the added glow) and before the crisp
+// mode-number overlay (so the readout stays sharp). gBloom (0..255) is live-
+// tunable; 0 = off. Subtle by design — it lifts the look without smearing shapes.
+// The three "new-style" knobs, all live-tunable (0 = off):
+uint8_t gBloom   = 56;   // base neighbour glow spill, ALL modes (≈0.22)
+uint8_t gHot     = 150;  // legacy only: white-hot highlight strength (bright pixels bleach toward white)
+uint8_t gShimmer = 36;   // legacy only: gentle shimmer amplitude ("flaky" life)
+bool    gLegacy  = false; // set per-frame in showGrid: the pre-showpiece modes (<68) get the retrofit
+static uint8_t gBloomEff=56;
+static void bloomRegion(CRGB* b,int lo,int hi){
+  static CRGB tmp[121];
+  int n=hi-lo+1;
+  for(int i=0;i<n;i++) tmp[i]=b[lo+i];
+  for(int i=0;i<n;i++){
+    const CRGB& L=tmp[i>0?i-1:0]; const CRGB& R=tmp[i<n-1?i+1:n-1];
+    int r=b[lo+i].r+(((int)L.r+R.r)*gBloomEff>>8);
+    int g=b[lo+i].g+(((int)L.g+R.g)*gBloomEff>>8);
+    int bl=b[lo+i].b+(((int)L.b+R.b)*gBloomEff>>8);
+    b[lo+i].r=r>255?255:r; b[lo+i].g=g>255?255:g; b[lo+i].b=bl>255?255:bl;
+  }
+}
+static void bloomFrame(){
+  gBloomEff = gLegacy ? (uint8_t)min((int)gBloom+34,120) : gBloom;   // stronger glow for the flat legacy modes
+  if(!gBloomEff) return;
+  for(int e=0;e<NUM_ELEC;e++){
+    bloomRegion(ledsX[e],0,120); bloomRegion(ledsX[e],136,256);
+    bloomRegion(ledsY[e],0,120); bloomRegion(ledsY[e],136,256);
+  }
+}
+// Per-pixel "legacy polish": bleach the bright pixels toward white (glowing hot
+// cores) and lay a gentle out-of-phase shimmer over them — the shiny/flaky surface
+// the fx-based modes get for free, retrofitted onto the flatter older modes without
+// touching their motion or shapes. No-op on the new showpiece modes (gLegacy=false).
+static inline void polishPixel(CRGB& p,int idx,int e,uint8_t shimT){
+  if(!(p.r|p.g|p.b)) return;
+  uint8_t mx=p.r>p.g?(p.r>p.b?p.r:p.b):(p.g>p.b?p.g:p.b);      // brightest channel
+  if(mx>90 && gHot){                                            // white-hot only on the bright pixels
+    uint16_t w=((uint16_t)(mx-90)*gHot)/165;                   // 0..gHot as mx runs 90..255
+    p.r+=(uint8_t)(((mx-p.r)*w)>>8); p.g+=(uint8_t)(((mx-p.g)*w)>>8); p.b+=(uint8_t)(((mx-p.b)*w)>>8);
+  }
+  if(gShimmer){                                                 // rolling shimmer; idx*37 → neighbours out of phase
+    uint8_t s=sin8((uint8_t)(idx*37+e*90+shimT));
+    uint16_t f=255-(((uint16_t)gShimmer*(uint8_t)(255-s))>>8);  // in [255-gShimmer , 255]
+    p.r=(uint8_t)((p.r*f)>>8); p.g=(uint8_t)((p.g*f)>>8); p.b=(uint8_t)((p.b*f)>>8);
+  }
+}
+
 // Central show: rotates every lit pixel's hue by (base+auto), measures total light for
 // the AGC, sets the normalized brightness, then pushes to LEDs.
 void showGrid(){
+  bloomFrame();                      // soft glow first, so the AGC normalises it and the overlay stays crisp
   uint8_t off=(uint8_t)(gHueBase+gHueAuto);
+  uint8_t shimT=(uint8_t)(millis()>>4);   // shimmer clock (~4s wrap)
   uint32_t lum=0;
   uint32_t litCnt=0;               // # of active LEDs meaningfully lit → drives the coverage sync
   uint32_t sumR=0,sumG=0,sumB=0;   // running colour of the lit pixels → dominant frame hue (post-rotation)
   const int COVER_THR=24;          // sum-of-channels a pixel must beat to count as "lit" (skips AA fringe)
   for(int e=0;e<NUM_ELEC;e++) for(int i=0;i<LEDS_PER_STRIP;i++){
     CRGB* p=&ledsX[e][i]; if(off && (p->r|p->g|p->b)){ CHSV h=rgb2hsv_approximate(*p); h.hue+=off; *p=h; }
+    if(gLegacy) polishPixel(*p,i,e,shimT);
     { int s=p->r+p->g+p->b; lum+=s; if(s>COVER_THR){ litCnt++; sumR+=p->r; sumG+=p->g; sumB+=p->b; } }
     p=&ledsY[e][i];       if(off && (p->r|p->g|p->b)){ CHSV h=rgb2hsv_approximate(*p); h.hue+=off; *p=h; }
+    if(gLegacy) polishPixel(*p,i,e+5,shimT);
     { int s=p->r+p->g+p->b; lum+=s; if(s>COVER_THR){ litCnt++; sumR+=p->r; sumG+=p->g; sumB+=p->b; } }
   }
   // Dominant wall colour: average the lit pixels (already hue-rotated above) and keep its
@@ -422,6 +473,9 @@ void loadSettings() {
 #include "animations/anim_faces.h"
 #include "animations/anim_new.h"
 #include "animations/anim_new2.h"    // 5 new energy/plasma modes (68..71) + replaces 48
+#include "animations/anim_new3.h"    // 15 showpiece modes (72..86)
+#include "animations/anim_new4.h"    // 15 showpiece modes (87..101)
+#include "animations/anim_new5.h"    // 5 next-tier modes (102..106): 3D/4D, morph, lensing
 
 void resetAnimState(uint32_t t) {
   rainInit=false;shockInit=false;novaInit=false;blobInit=false;
@@ -464,7 +518,6 @@ void setup() {
   if(esp_now_init() != ESP_OK) { Serial.println("ESP-NOW init failed!"); while(1) delay(1000); }
   esp_now_register_recv_cb(onReceive);
   if(!togaAddPeer(TOGA_BCAST)) { Serial.println("Broadcast peer failed!"); while(1) delay(1000); }
-  togaOtaSetup("toga-grid");                         // flashable from now on, mid-show, no trigger
   Serial.printf("Grid ready. %d animations.\n", TOTAL_ANIMS);
 }
 
@@ -479,16 +532,20 @@ void setup() {
 //  burn the NVS write budget for nothing, and the mode worth restoring after a
 //  reboot is the last one picked by hand, not wherever the automatic stopped.
 // ══════════════════════════════════════════════════════════════
-static const uint8_t AUTO_CALM[]  = {14,15,58,50,55,24,12,18};
-static const uint8_t AUTO_SPACE[] = {19,43,32,34,45,7,5,47,48,44,42,61};
-static const uint8_t AUTO_PARTY[] = {2,21,36,62,56,63,64,10,11,57,4,33,60,54};
-static const uint8_t AUTO_SHOW[]  = {29,38,39,40,41,53,30,31,37,49,52};
+// Lists refreshed 2026-07-26 to weave in the 30 new showpiece modes (68..101).
+static const uint8_t AUTO_CALM[]  = {14,15,58,50,78,72,71,87,97,55,24,81,84,86,12};       // langsam, flächig, atmend
+static const uint8_t AUTO_SPACE[] = {19,43,32,34,77,89,92,93,7,45,99,100,85,44,61,82,75,102,103,105};  // Sterne, Nebel, Kosmos
+static const uint8_t AUTO_PARTY[] = {2,21,36,62,56,63,64,10,68,74,88,98,96,73,95,69,70,57,33,60};  // schnell, elektrisch
+static const uint8_t AUTO_SHOW[]  = {29,38,39,40,41,53,30,31,37,49,80,90,94,91,76,83,79,104};  // Figuren, Mechanik, Kreaturen
+// 5th mood — the best of the new showpiece packs (the prismShards/nebulaBreath lineage + next tier).
+static const uint8_t AUTO_SPECIAL[]= {70,71,72,77,94,98,91,89,86,88,82,92,101,90,85,99,73,79,100,84,102,103,104,105,106}; // Spezial — Best-of
 struct AutoMood { const uint8_t* list; uint8_t n; uint16_t everyMs; };
-static const AutoMood AUTO_MOODS[TOGA_AUTO_COUNT] = {   // everyMs = fixed dwell per mode
-  {AUTO_CALM,  sizeof(AUTO_CALM),  60000},   // 1 Ruhe   — langsam, flächig
-  {AUTO_SPACE, sizeof(AUTO_SPACE), 60000},   // 2 Space  — Sterne, Nebel, Planeten
-  {AUTO_PARTY, sizeof(AUTO_PARTY), 60000},   // 3 Party  — schnell, hart geschnitten
-  {AUTO_SHOW,  sizeof(AUTO_SHOW),  60000},   // 4 Show   — Spiele, Gesichter, Text
+static const AutoMood AUTO_MOODS[TOGA_AUTO_COUNT] = {   // everyMs = LEGACY/unused (autoDwellMs uses cfg.autoDwellS)
+  {AUTO_CALM,    sizeof(AUTO_CALM),    60000},   // 1 Ruhe    — langsam, flächig
+  {AUTO_SPACE,   sizeof(AUTO_SPACE),   60000},   // 2 Space   — Sterne, Nebel, Planeten
+  {AUTO_PARTY,   sizeof(AUTO_PARTY),   60000},   // 3 Party   — schnell, hart geschnitten
+  {AUTO_SHOW,    sizeof(AUTO_SHOW),    60000},   // 4 Show    — Spiele, Gesichter, Text, Mechanik
+  {AUTO_SPECIAL, sizeof(AUTO_SPECIAL), 60000},   // 5 Spezial — Best-of der neuen Showpieces
 };
 
 // Runtime play order for the active mood: a shuffled permutation of the mood's
@@ -632,7 +689,12 @@ void applyCommand(const TogaCmdMsg& m, uint32_t t){
       case TOGA_P_BRICOEF: cfg.modeFactor[cfg.animIndex]=(uint8_t)constrain((int)cfg.modeFactor[cfg.animIndex]+d*BRICOEF_STEP,BRICOEF_MIN,BRICOEF_MAX); recomputeBrightness(); break;  // this mode's factor
       case TOGA_P_SPEED: cfg.animSpeed=constrain(cfg.animSpeed+d*0.1f,0.1f,4.0f); cfg.speedByMode[cfg.animIndex]=cfg.animSpeed; break;  // per-mode speed
       case TOGA_P_COLOR: gHueBase  =(uint8_t)(gHueBase  +d*6); break;   // Color (wraps)
-      case TOGA_P_STROBEHUE: gStrobeHue=(uint8_t)(gStrobeHue+d*6); break;   // Strobe colour (wraps)
+      case TOGA_P_STROBEHUE: {                                          // Strobe colour: cycle a fixed palette so WHITE (slot 0) is always reachable
+        static const uint8_t SH[]={0,255,16,32,64,96,128,160,192,224}; // 0=white; then red,orange,yellow,green,cyan,blue,purple,magenta
+        const int N=sizeof(SH); int idx=0;
+        for(int k=0;k<N;k++){ if(SH[k]==gStrobeHue){ idx=k; break; } } // find current slot (unknown value → falls back to white)
+        gStrobeHue=SH[(idx+d+N)%N];                                    // step by ±1 and wrap — 0 is a real stop again
+      } break;
       case TOGA_P_HUESPEED: gHueSpeed =(uint8_t)constrain((int)gHueSpeed+d,0,HUE_SPEED_MAX); hueSpeedByMode[cfg.animIndex]=gHueSpeed; break; // per-mode hue-speed
       case TOGA_P_STROBEGAP: cfg.strobeGapMs=(uint8_t)constrain((int)cfg.strobeGapMs+d*STROBE_GAP_STEP,
                                                  STROBE_GAP_MIN,STROBE_GAP_MAX); break; // legacy — no longer drives timing
@@ -653,10 +715,6 @@ void applyCommand(const TogaCmdMsg& m, uint32_t t){
 }
 
 void loop() {
-  // Above every early return below (the frame cap, and the strobe on every
-  // single iteration while held) — a grid you cannot flash mid-strobe is a grid
-  // you cannot flash exactly when you want to.
-  togaOtaHandle();
   togaWifiTick();      // the AP may come up after us, or come back
 
   static uint32_t lastFrame     = 0;
@@ -676,11 +734,6 @@ void loop() {
   bool senderAlive = (espLastHeartbeat > 0) &&
                      ((t - (uint32_t)espLastHeartbeat) < (uint32_t)HEARTBEAT_TIMEOUT);
   gSweepOn = senderAlive && espSweep;   // sweep only while the controller is present (like blackout/spot)
-
-  // Sits here, not at the end of loop(): the strobe path below returns early on
-  // every iteration while held, and a grid strobed through its first minute
-  // would never commit and would roll back on the next reboot.
-  togaOtaMarkValidWhenHealthy(t, senderAlive);
 
   // ── Strobe: momentary, driven by the controller ──
   bool strobeHeld = senderAlive && espStrobe;
@@ -951,6 +1004,7 @@ void loop() {
   gBaseBri = modeStrobeHeld ? (uint8_t)min((int)cfg.brightness*7/4,255) : cfg.brightness;
   FastLED.setBrightness(gBaseBri);   // fallback for anims that FastLED.show() without showGrid()
   gOverlayPainted=false;             // showGrid() sets it if it paints the mode number
+  gLegacy = cfg.animIndex < 68;      // pre-showpiece modes get the shiny/flaky retrofit in showGrid()
   switch(cfg.animIndex){
     case 0:  anim_setupGrid(at);           break;
     case 1:  anim_heartbeat(at);           break;
@@ -1024,6 +1078,41 @@ void loop() {
     case 69: anim_emberVortex(at,dt);      break;   // new
     case 70: anim_prismShards(at,dt);      break;   // new
     case 71: anim_nebulaBreath(at,dt);     break;   // new
+    case 72: anim_jellyfishBloom(at,dt);      break;
+    case 73: anim_kaleidoWheel(at,dt);        break;
+    case 74: anim_lightningTree(at,dt);       break;
+    case 75: anim_dnaHelix(at,dt);            break;
+    case 76: anim_fireflies(at,dt);           break;
+    case 77: anim_blackHoleAccretion(at,dt);  break;
+    case 78: anim_oceanCaustics(at,dt);       break;
+    case 79: anim_phoenixRise(at,dt);         break;
+    case 80: anim_clockworkGears(at,dt);      break;
+    case 81: anim_magneticDipole(at,dt);      break;
+    case 82: anim_quantumOrbitals(at,dt);     break;
+    case 83: anim_serpentNest(at,dt);         break;
+    case 84: anim_crystalGrowth(at,dt);       break;
+    case 85: anim_solarFlare(at,dt);          break;
+    case 86: anim_mandalaBloom(at,dt);        break;
+    case 87: anim_inkBloom(at,dt);            break;
+    case 88: anim_electricEel(at,dt);         break;
+    case 89: anim_galaxyCollision(at,dt);     break;
+    case 90: anim_gyroscope(at,dt);           break;
+    case 91: anim_doublePendulum(at,dt);      break;
+    case 92: anim_pulsarBeacon(at,dt);        break;
+    case 93: anim_wormholeThroat(at,dt);      break;
+    case 94: anim_spirographArms(at,dt);      break;
+    case 95: anim_honeycombPulse(at,dt);      break;
+    case 96: anim_turbineBlades(at,dt);       break;
+    case 97: anim_mantaGlide(at,dt);          break;
+    case 98: anim_plasmaGlobe(at,dt);         break;
+    case 99: anim_supernovaShell(at,dt);      break;
+    case 100: anim_cometSwarm(at,dt);         break;
+    case 101: anim_roseWindow(at,dt);         break;
+    case 102: anim_tesseract(at,dt);          break;
+    case 103: anim_torusKnot(at,dt);          break;
+    case 104: anim_morphSwarm(at,dt);         break;
+    case 105: anim_gravitationalLens(at,dt);  break;
+    case 106: anim_celestialDragon(at,dt);    break;
   }
 
   // ── Mode-change readout ──

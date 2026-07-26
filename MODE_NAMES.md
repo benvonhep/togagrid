@@ -1,6 +1,6 @@
 # Mode names — keep in sync
 
-The grid runs **72 animations** (indices `0..71`). The mode **index and order are
+The grid runs **107 animations** (indices `0..106`). The mode **index and order are
 the contract**: a module in FOLLOW mode renders row `k` of its `MODE_TABLE` while
 the grid runs anim `k`. If the order changes in one place and not the other, every
 strip cites the wrong animation from the changed index onward.
@@ -9,8 +9,8 @@ strip cites the wrong animation from the changed index onward.
 
 | # | Place | What it holds | Count symbol |
 |---|-------|---------------|--------------|
-| 1 | [grid/grid.ino](grid/grid.ino) — `case 0..71:` in the anim switch (~line 888) | the real `anim_*()` called per index | `TOTAL_ANIMS` = 72 ([grid/grid_config.h:44](grid/grid_config.h#L44)) |
-| 2 | [module/module_effects.h](module/module_effects.h) — `MODE_TABLE[]` (~line 78) | one `ModeSpec` row per grid anim, same order | `MOD_MODE_COUNT` = 72 ([module/module_effects.h:77](module/module_effects.h#L77)) |
+| 1 | [grid/grid.ino](grid/grid.ino) — `case 0..106:` in the anim switch (~line 954) | the real `anim_*()` called per index | `TOTAL_ANIMS` = 107 ([grid/grid_config.h:44](grid/grid_config.h#L44)) |
+| 2 | [module/module_effects.h](module/module_effects.h) — `MODE_TABLE[]` (~line 78) | one `ModeSpec` row per grid anim, same order | `MOD_MODE_COUNT` = 107 ([module/module_effects.h:77](module/module_effects.h#L77)) |
 
 **Invariant:** `TOTAL_ANIMS == MOD_MODE_COUNT` **and** row `k` of `MODE_TABLE`
 describes the same animation as `case k:` in `grid.ino`.
@@ -73,8 +73,37 @@ describes the same animation as `case k:` in `grid.ino`.
 | | | 70 | prismShards ⭐ |
 | | | 71 | nebulaBreath ⭐ |
 
-⭐ = new 2026-07-26. Mode **48** was `earthWindow` (deleted per request) and is now
-`auroraCurtains`, the first of 5 new energy/plasma modes in the style of
-`plasmaLightning` (67). The other four are **68–71** (`anim_new2.h`). Row **30** is
-`tetris`. `MODE_TABLE` (module_effects.h) has matching rows 0..71 (MOD_MODE_COUNT=72);
-`TOGA_EFFECT_COUNT` in toga_proto.h is also 72.
+## The 30 showpiece modes 72–101 (🔥 new 2026-07-26, `anim_new3.h` + `anim_new4.h`)
+
+| # | Name (`anim_*`) | # | Name (`anim_*`) | # | Name (`anim_*`) |
+|---|-----------------|---|-----------------|---|-----------------|
+| 72 | jellyfishBloom | 82 | quantumOrbitals | 92 | pulsarBeacon |
+| 73 | kaleidoWheel | 83 | serpentNest | 93 | wormholeThroat |
+| 74 | lightningTree | 84 | crystalGrowth | 94 | spirographArms |
+| 75 | dnaHelix | 85 | solarFlare | 95 | honeycombPulse |
+| 76 | fireflies | 86 | mandalaBloom | 96 | turbineBlades |
+| 77 | blackHoleAccretion | 87 | inkBloom | 97 | mantaGlide |
+| 78 | oceanCaustics | 88 | electricEel | 98 | plasmaGlobe |
+| 79 | phoenixRise | 89 | galaxyCollision | 99 | supernovaShell |
+| 80 | clockworkGears | 90 | gyroscope | 100 | cometSwarm |
+| 81 | magneticDipole | 91 | doublePendulum | 101 | roseWindow |
+
+⭐ = new (2026-07-26, `anim_new2.h`). Mode **48** was `earthWindow` (deleted) and is
+now `auroraCurtains`. 🔥 **72–101** are the 30 showpiece modes in the spirit of
+prismShards/nebulaBreath — differential-speed rotational arms (spirograph, gears,
+gyroscope, radar-cousins), organic creatures (jellyfish, eel, manta, serpents,
+phoenix), and physics/cosmic set-pieces (accretion disk, pulsar, supernova,
+double-pendulum, plasma globe).
+
+## The 5 next-tier modes 102–106 (🚀 new 2026-07-26, `anim_new5.h`)
+
+| # | Name (`anim_*`) | New technique |
+|---|-----------------|---------------|
+| 102 | tesseract | 4D hypercube, projected 4D→3D→2D |
+| 103 | torusKnot | 3D parametric (2,3) knot with depth shading |
+| 104 | morphSwarm | particle swarm easing between figures (ring/heart/star/spiral/knot) |
+| 105 | gravitationalLens | starfield warped by 1/r light-bending + Einstein/photon ring |
+| 106 | celestialDragon | long follow-the-leader 3D serpent, depth = thickness+brightness |
+
+`MODE_TABLE`, `MOD_MODE_COUNT`, `TOTAL_ANIMS` and `TOGA_EFFECT_COUNT` are all now **107**.
+Auto-mood **5 (Spezial)** and Space/Show playlists include the new modes ([grid/grid.ino](grid/grid.ino) `AUTO_*`).
