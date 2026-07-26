@@ -102,6 +102,7 @@ uint8_t seg7(char c){
     case 'C': return g7a|g7d|g7e|g7f;
     case 'E': return g7a|g7d|g7e|g7f|g7g;
     case 'F': return g7a|g7e|g7f|g7g;
+    case 'G': return g7a|g7c|g7d|g7e|g7f;   // C-shape + bottom-right → reads as G
     case 'H': return g7b|g7c|g7e|g7f|g7g;
     case 'L': return g7d|g7e|g7f;
     case 'O': return g7a|g7b|g7c|g7d|g7e|g7f;

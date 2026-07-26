@@ -535,11 +535,13 @@ void autoShowMode(uint8_t mood, uint8_t pos, uint32_t t){
 //  press brings a new one. The flash itself stays as short as the LED refresh
 //  allows and only the gap is tunable — see the render block in loop().
 // ══════════════════════════════════════════════════════════════
-#define STROBE_LOOKS    4
+#define STROBE_LOOKS    4   // geometric looks dealt from the no-repeat shuffle-bag (0..3)
 #define SL_SQUARES      0   // random squares (the original look)
 #define SL_STRIPS       1   // random whole strips
 #define SL_RINGS        2   // square rings, middle → outside
 #define SL_QUADRANTS    3   // one random quarter
+#define SL_TOGA         4   // "TOGA" banner text — rare; NOT in the bag (see nextStrobeLook)
+#define STROBE_TOGA_1_IN 15 // ~1-in-N presses flash the TOGA text instead of a geometric look
 #define STROBE_STRIP_N  6   // strips lit per flash in SL_STRIPS
 
 // Random, but never the same look twice in a row: deal the five out in a
@@ -548,6 +550,10 @@ void autoShowMode(uint8_t mood, uint8_t pos, uint32_t t){
 // nothing" — which is the one thing this must never look like.
 uint8_t nextStrobeLook(){
   static uint8_t bag[STROBE_LOOKS], left=0, last=255;
+  // Rare special: ~1-in-STROBE_TOGA_1_IN presses flash the "TOGA" banner instead of a
+  // geometric look. Rolled independently of the no-repeat bag (which only holds the four
+  // geometric looks), so TOGA can surface any time without disturbing their rotation.
+  if(random(STROBE_TOGA_1_IN)==0) return SL_TOGA;
   if(left==0){
     for(uint8_t i=0;i<STROBE_LOOKS;i++) bag[i]=i;
     for(int i=STROBE_LOOKS-1;i>0;i--){ int j=random(i+1); uint8_t tmp=bag[i]; bag[i]=bag[j]; bag[j]=tmp; }
@@ -572,6 +578,13 @@ void strobeCell(int row,int col,CRGB sc){
 // cleared; must stay cheap enough to finish inside a flash.
 void strobeFlash(uint8_t look, uint16_t n, CRGB sc){
   switch(look){
+    case SL_TOGA: {
+      // Wider 12-segment font (real capital T, not the 1-cell 7-seg): "TOGA" is 4 glyphs
+      // × 3 node-cols and spans the full 0..11 lattice, so leftC=0 centres it. Strobe
+      // colour, buffer already cleared by the caller.
+      int leftC=(12-3*4)/2; if(leftC<0) leftC=0;
+      drawTextCells("TOGA",leftC,TEXT_TOP,sc);
+      break; }
     case SL_STRIPS:
       for(int s=0;s<STROBE_STRIP_N;s++){
         int strip=1+random(12); bool isX=random(2);      // a strip may be picked twice: harmless
