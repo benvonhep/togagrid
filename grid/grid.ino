@@ -535,12 +535,11 @@ void autoShowMode(uint8_t mood, uint8_t pos, uint32_t t){
 //  press brings a new one. The flash itself stays as short as the LED refresh
 //  allows and only the gap is tunable — see the render block in loop().
 // ══════════════════════════════════════════════════════════════
-#define STROBE_LOOKS    5
+#define STROBE_LOOKS    4
 #define SL_SQUARES      0   // random squares (the original look)
-#define SL_FULL         1   // the whole wall
-#define SL_STRIPS       2   // random whole strips
-#define SL_RINGS        3   // square rings, middle → outside
-#define SL_QUADRANTS    4   // one random quarter
+#define SL_STRIPS       1   // random whole strips
+#define SL_RINGS        2   // square rings, middle → outside
+#define SL_QUADRANTS    3   // one random quarter
 #define STROBE_STRIP_N  6   // strips lit per flash in SL_STRIPS
 
 // Random, but never the same look twice in a row: deal the five out in a
@@ -573,13 +572,6 @@ void strobeCell(int row,int col,CRGB sc){
 // cleared; must stay cheap enough to finish inside a flash.
 void strobeFlash(uint8_t look, uint16_t n, CRGB sc){
   switch(look){
-    case SL_FULL:
-      for(int e=0;e<NUM_ELEC;e++){
-        for(int i=0;i<LEDS_PER_STRIP;i++){ ledsX[e][i]=sc; ledsY[e][i]=sc; }
-        ledsX[e][255]=ledsX[e][256]=ledsX[e][257]=CRGB::Black;
-        ledsY[e][255]=ledsY[e][256]=ledsY[e][257]=CRGB::Black;
-      }
-      break;
     case SL_STRIPS:
       for(int s=0;s<STROBE_STRIP_N;s++){
         int strip=1+random(12); bool isX=random(2);      // a strip may be picked twice: harmless

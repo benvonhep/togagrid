@@ -704,10 +704,20 @@ static inline bool togaParseModCfg(const uint8_t* data, int len, const uint8_t m
 static inline void togaApBegin(){
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);                       // an AP that sleeps drops the bus
+  // Pin the SoftAP IP/DHCP explicitly BEFORE softAP(). Same address as the
+  // default (192.168.4.1, so no link/URL changes), but it makes the DHCP server
+  // deterministic — without it a RECONNECTING client can hang at "obtaining IP",
+  // which iOS/Android surface as a password/auth failure even with the right key.
+  WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
   // The channel argument is the load-bearing one: it pins the radio to
   // TOGA_CHANNEL, which is what lets the whole fleet stay on the bus while
   // associated. max_connection 8: grid + N modules + a laptop.
   WiFi.softAP(TOGA_AP_SSID, TOGA_AP_PASS, TOGA_CHANNEL, 0 /*not hidden*/, 8);
+  // Hard-disable Wi-Fi power save on the AP. Stronger than setSleep(false): a
+  // radio that dozes can drop the EAPOL 4-way-handshake frames of a reconnecting
+  // station, so the phone reports "wrong password" even when it is correct. This
+  // is the #1 fix for AP_STA SoftAP reconnect-auth failures. (esp_wifi.h incl.)
+  esp_wifi_set_ps(WIFI_PS_NONE);
 }
 
 // EVERYONE ELSE. Call BEFORE esp_now_init().

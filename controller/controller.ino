@@ -831,6 +831,23 @@ void setup(){
     trellis.activateKey(i,SEESAW_KEYPAD_EDGE_FALLING);
     trellis.registerCallback(i,handleKey);
   }
+  // Diagnostics: log every station (dis)connect + IP lease on the AP, so a
+  // reconnect that fails can be pinned to the auth phase (no STACONNECTED) vs the
+  // DHCP phase (STACONNECTED but no IPASSIGNED). Registered BEFORE togaApBegin().
+  WiFi.onEvent([](arduino_event_id_t e, arduino_event_info_t info){
+    const uint8_t* m;
+    switch(e){
+      case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
+        m=info.wifi_ap_staconnected.mac;
+        Serial.printf("AP + station %02X:%02X:%02X:%02X:%02X:%02X (aid %d)\n",m[0],m[1],m[2],m[3],m[4],m[5],info.wifi_ap_staconnected.aid); break;
+      case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
+        m=info.wifi_ap_stadisconnected.mac;
+        Serial.printf("AP - station %02X:%02X:%02X:%02X:%02X:%02X (aid %d)\n",m[0],m[1],m[2],m[3],m[4],m[5],info.wifi_ap_stadisconnected.aid); break;
+      case ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED:
+        Serial.printf("AP = IP assigned %s\n", IPAddress(info.wifi_ap_staipassigned.ip.addr).toString().c_str()); break;
+      default: break;
+    }
+  });
   // We host the WLAN. Pinned to TOGA_CHANNEL, so associating to it costs nobody
   // their place on the bus — that is what makes every node flashable mid-show.
   togaApBegin();
