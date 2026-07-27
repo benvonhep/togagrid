@@ -17,19 +17,31 @@ Nur `arduino-cli` musst du vorher installiert haben (siehe [Schritt 1](#1-voraus
 
 **Windows** (Doppelklick oder im `cmd`):
 ```bat
-install.bat              :: Core + Bibliotheken in den richtigen Versionen installieren (einmalig)
-flash.bat controller     :: Board anstecken, dann flashen (Port wird automatisch erkannt)
+install.bat     :: Core + Bibliotheken in den richtigen Versionen installieren (einmalig)
+flash.bat       :: fragt im Menue, WAS geflasht wird, und flasht (Port automatisch)
 ```
 
 **macOS / Linux:**
 ```bash
 ./install.sh
-./flash.sh controller
+./flash.sh
 ```
 
-Das Flash-Skript versteht `grid`, `controller` und `module`. Ist genau ein Board
-angesteckt, findet es den Port selbst; sonst Port angeben — Windows z. B.
-`flash.bat grid COM3`, macOS/Linux `./flash.sh grid /dev/cu.usbserial-0001`.
+Das Flash-Skript **ohne Argument** zeigt ein Menü:
+
+```
+Was soll geflasht werden?
+  1) Grid
+  2) Controller
+  3) Modul
+  4) Alles nacheinander (je Board einzeln anstecken)
+```
+
+Nur das **Grid** flashen? Skript starten und **1** wählen. Ist genau ein Board
+angesteckt, findet das Skript den Port selbst.
+
+Man kann das Ziel auch direkt angeben — `flash.bat grid` bzw. `./flash.sh grid`
+(optional mit Port: `flash.bat grid COM3` / `./flash.sh grid /dev/cu.usbserial-0001`).
 
 Wer lieber alles von Hand macht oder verstehen will, was passiert, folgt einfach
 den Schritten unten.
@@ -131,9 +143,9 @@ bezeichnet.
 Immer aus dem **Projekt-Hauptordner** ausführen (der mit den Ordnern `grid/`,
 `controller/`, `module/`). `<PORT>` durch deinen echten Port ersetzen.
 
-> 🪟 **Windows:** am einfachsten `flash.bat controller` benutzen (siehe Schnellstart).
-> Von Hand im `cmd` geht es genauso, nur ohne das führende `./` und mit
-> `set "FQBN=..."` statt `FQBN=...`.
+> 🪟 **Windows:** am einfachsten `flash.bat` (ohne Argument) benutzen und im Menü
+> wählen — siehe Schnellstart. Von Hand im `cmd` geht es genauso wie unten, nur
+> ohne das führende `./` und mit `set "FQBN=..."` statt `FQBN=...`.
 
 ```bash
 # Einmal setzen (gilt für die aktuelle Terminal-Sitzung):
