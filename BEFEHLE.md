@@ -4,6 +4,10 @@ Alle Befehle, die die Control Unit (NeoTrellis 4×4) per ESP-NOW an das Grid
 sendet. Quellen: [`controller/controller.ino`](controller/controller.ino),
 [`grid/grid.ino`](grid/grid.ino), [`grid/grid_config.h`](grid/grid_config.h).
 
+> **Profil Drahthaus (Konzert):** abweichende Belegung (Setlist, Text-Strobes auf Taste 11,
+> eigene Auto-Listen) steht in [BEFEHLE_DRAHTHAUS.md](BEFEHLE_DRAHTHAUS.md). Dieses Dokument
+> beschreibt das Profil **Togalicht**.
+
 ## 1. Tasten der Control Unit
 
 > **Pad physisch um 90° im Uhrzeigersinn montiert.** Die Zahlen sind die

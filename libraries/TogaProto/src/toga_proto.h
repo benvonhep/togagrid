@@ -98,7 +98,11 @@
 //     effects + dance autos, see below) — those are values, not struct shape, so
 //     they cost nothing on their own; the localHue byte is the wire-layout change
 //     that forces the bump. Reflash the whole fleet.
-#define TOGA_VERSION  10
+// v11: Drahthaus concert. TogaCmdMsg.reserved2 became profile + textStrobe (size
+//     unchanged, MEANING changed → bump), TOGA_CMD_MODESET (absolute mode jump),
+//     and the local/auto effect ranges moved 100/120 → 140/160 because they sat on
+//     top of grid modes 100+. 16 modes appended (107..122). Reflash the whole fleet.
+#define TOGA_VERSION  11
 
 // The channel the bus runs on AND the channel the controller's AP is pinned to.
 // Those being the same number is the whole architecture: it is what lets a node
@@ -116,6 +120,8 @@
 #define TOGA_MSG_SYNC   2       // grid -> broadcast (grid is the only sync source)
 #define TOGA_MSG_HELLO  3       // module -> broadcast (1/s): "I exist, here is my config"
 #define TOGA_MSG_MODCFG 4       // controller (module UI) -> broadcast: settings for ONE module, by MAC
+#define TOGA_MSG_HUETAB 6       // grid -> broadcast (1/s): every mode's stored colour, for the web UI's colour pickers.
+                                // A new TYPE, not a changed struct: an older node simply ignores it (no version bump).
 // 5 was TOGA_MSG_OTA, back when OTA meant taking a node out of the show. The AP
 // is on TOGA_CHANNEL now, so every node is permanently flashable without
 // leaving the bus and nobody has to be asked. Don't reuse the id.
@@ -124,7 +130,8 @@
 // A module in FOLLOW mode renders one dedicated 1D mode per grid mode, so the
 // count is the grid's mode count. The names below are the grid animation names
 // at each index (labels only — a module's render is a citation, not a copy).
-#define TOGA_EFFECT_COUNT 107   // == grid TOTAL_ANIMS / module MOD_MODE_COUNT (0..106)
+#define TOGA_EFFECT_COUNT 128   // == grid TOTAL_ANIMS / module MOD_MODE_COUNT (0..127); must stay ≤ 128 (hue table, MODEHUE) — FULL now
+#define TOGA_MODE_SCHWARZ 127   // "Schwarz": wall dark except one dim standby dot bottom right, modules dark (Drahthaus setlist: before the submarine)
 #define TOGA_EFFECT_OFF    200  // pinned blackout (replaces the old effect id 8 "off")
 #define TOGA_EFFECT_FOLLOW 255  // not a pinned effect: derive it from the grid's mode
 #define TOGA_CFG_KEEP      254  // TogaModCfgMsg: leave this field as it is
@@ -139,12 +146,17 @@
 //   · TOGA_EFFECT_LOCAL_BASE + k  → local effect k (0..TOGA_LOCAL_COUNT-1)
 //   · TOGA_EFFECT_AUTO_BASE  + k  → dance auto-program k (0..TOGA_LOCAL_AUTO_COUNT-1),
 //                                   which cycles a curated set of local effects.
+// v11: the bases moved from 100/120 to 140/160. At 100 the local range sat ON TOP
+// of grid modes 100..106 (and every mode appended since), so a module pinned to
+// mode 100 rendered local effect 0 instead. 140..151 / 160..162 leave room for
+// grid modes up to 139 and stay clear of OFF (200). A module migrates an old
+// stored pin once in loadConfig() (see "effv" there).
 // Names live here (not just in the two web UIs) so the controller page and the
 // module fallback page cannot drift from each other or from the firmware. An
 // un-updated module fails applyModCfg's range test and ignores these, graceful.
-#define TOGA_EFFECT_LOCAL_BASE   100
+#define TOGA_EFFECT_LOCAL_BASE   140
 #define TOGA_LOCAL_COUNT          12
-#define TOGA_EFFECT_AUTO_BASE    120
+#define TOGA_EFFECT_AUTO_BASE    160
 #define TOGA_LOCAL_AUTO_COUNT      3
 static inline bool togaIsLocalEffect(uint8_t e){ return e >= TOGA_EFFECT_LOCAL_BASE && e < TOGA_EFFECT_LOCAL_BASE + TOGA_LOCAL_COUNT; }
 static inline bool togaIsAutoEffect (uint8_t e){ return e >= TOGA_EFFECT_AUTO_BASE  && e < TOGA_EFFECT_AUTO_BASE  + TOGA_LOCAL_AUTO_COUNT; }
@@ -192,7 +204,15 @@ static inline const char* togaEffectName(uint8_t e){
     "inkBloom","electricEel","galaxyCollision","gyroscope","doublePendulum",
     "pulsarBeacon","wormholeThroat","spirographArms","honeycombPulse","turbineBlades",
     "mantaGlide","plasmaGlobe","supernovaShell","cometSwarm","roseWindow",
-    "tesseract","torusKnot","morphSwarm","gravitationalLens","celestialDragon"
+    "tesseract","torusKnot","morphSwarm","gravitationalLens","celestialDragon",
+    // ── Drahthaus concert pack (107..122): marker, one mode per song, DJ modes ──
+    "konzertMarker (U-Boot)","dh100Elefanten","dhWhereDidYouSleep (mitosis)","dhEcholot","dhCryMeARiver",
+    "dhNichtErschrecken (Gewitter)","dhAlleGegenAlle (shockwave)","dhSabbia1 (Sandsturm)","dhSabbia2 (vortex)","dhMuecke",
+    "dhRoentgenauge","dhDienstagRave (quadMirror)","dhSong12","quadMirror","squareSpiral","gridPulse",
+    // ── Drahthaus test pack (123..126): big lettering, word art ──
+    "dhRiesenschrift (DRAHTHAUS)","dhElephantInTheRoom (WordArt)","dhMonogramm (DH)","dhElefantenKopf",
+    // ── 127: dark standby ──
+    "Schwarz (Standby-Punkt)"
   };
   if(e < TOGA_EFFECT_COUNT)    return N[e];
   if(e == TOGA_EFFECT_OFF)     return "aus";
@@ -206,6 +226,10 @@ static inline const char* togaEffectName(uint8_t e){
 #define TOGA_CMD_PARAM     2    // arg = +1/-1 step of .target
 #define TOGA_CMD_BEAT      3    // arg = beat period in ms, set directly (no tapping)
 #define TOGA_CMD_BEAT_TAP  4    // one beat tap, sent the instant it happens; arg unused
+#define TOGA_CMD_TEXTCOL   6    // colour of one text strobe (web UI): target = text id 1..5 (| 0x80 = back to the
+                                // strobe colour), arg = hue<<8 | sat (sat 0 = white). Grid stores it in NVS.
+#define TOGA_CMD_MODESET   5    // arg = ABSOLUTE anim index (grid only). The controller's
+                                // Drahthaus setlist steps with this instead of ±1 (v11)
 
 // ── Param ids (TogaCmdMsg.target when cmd == TOGA_CMD_PARAM) ──
 #define TOGA_P_BRI        0
@@ -218,6 +242,7 @@ static inline const char* togaEffectName(uint8_t e){
 #define TOGA_P_STROBESPEED 7  // ONE global strobe speed shared by strobe(15)/mode(14)/castle(13)
 #define TOGA_P_AUTOINT    8   // auto-mode dwell per mode, ABSOLUTE seconds (arg, not a step) — set from the web UI
 #define TOGA_P_SWEEPINT   9   // speed-sweep min→max→min period, ABSOLUTE seconds (arg, not a step) — set from the web UI
+#define TOGA_P_MODEHUE   10   // ABSOLUTE per-mode colour from the web UI: arg = mode*256 + hue offset (mode < 128)
 
 // ── Momentary flags (TogaCmdMsg.flags), sent on EVERY packet incl. heartbeat ──
 #define TOGA_F_STROBE        0x01   // button 15
@@ -257,6 +282,33 @@ static inline const char* togaEffectName(uint8_t e){
 // both; re-check both ends when changing one.
 //                                                     calm space party show spezial
 static const uint8_t TOGA_AUTO_HUE[TOGA_AUTO_COUNT] = { 140,  195,   10,  85,  220 };
+
+// ── Profile (TogaCmdMsg.profile), on EVERY packet like autoMode (v11) ──
+// The controller owns it (NVS) and the grid merely follows: 0 = Togalicht (the
+// full mode list, mode-number readout, CASTLE strobe on key 13), 1 = Drahthaus
+// (the concert: +/- walk the controller's setlist via TOGA_CMD_MODESET, no number
+// readout on the wall, key 13 opens the text-strobe layer). Everything else on
+// the pad is identical in both.
+#define TOGA_PROFILE_TOGA       0
+#define TOGA_PROFILE_DRAHTHAUS  1
+
+// ── Text strobe (TogaCmdMsg.textStrobe), on EVERY packet while held (v11) ──
+// 0 = none. 1..TOGA_TEXT_COUNT = the text the grid flashes on the castle-strobe
+// rhythm (one global strobe speed, togaSquareOn). Modules have no font: they
+// treat any non-zero value exactly like the castle strobe (solid tint flash).
+// A byte, not flag bits: the flags byte had two bits left and there are six texts.
+#define TOGA_TEXT_NONE        0
+#define TOGA_TEXT_RAVE        1   // "RA" over "VE", bold block letters
+#define TOGA_TEXT_ALLE        2   // "ALLE GEGEN ALLE" — all three words, one picture
+#define TOGA_TEXT_ELEFANT     3   // elephant pictogram
+#define TOGA_TEXT_DH_QUADRAT  4   // DHA / RTU / AHS — DRAHTHAUS read column-wise
+#define TOGA_TEXT_DRAHT_HAUS  5   // "DRAHT" over "HAUS"
+#define TOGA_TEXT_COUNT       5   // (6 "DRAHTHAUS" scroll was removed)
+static inline const char* togaTextName(uint8_t k){   // 1-based, like the wire value
+  static const char* const N[TOGA_TEXT_COUNT] = {
+    "RAVE","ALLE GEGEN ALLE","Elefant","DRAHTHAUS-Quadrat","DRAHT / HAUS" };
+  return (k>=1 && k<=TOGA_TEXT_COUNT) ? N[k-1] : "-";
+}
 
 static const uint8_t TOGA_BCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 
@@ -487,11 +539,14 @@ struct TogaCmdMsg {
   uint8_t  flags;      // 10  TOGA_F_*  (on every packet, heartbeat included)
   uint8_t  autoMode;   // 11  0 = off, 1..TOGA_AUTO_COUNT (every packet, like flags)
   int16_t  arg;        // 12
-  uint16_t reserved2;  // 14  must be 0
+  uint8_t  profile;    // 14  TOGA_PROFILE_* (every packet, like autoMode) — was reserved2 (v11)
+  uint8_t  textStrobe; // 15  TOGA_TEXT_* while a text key is held, else 0 (every packet) (v11)
 };
 static_assert(sizeof(TogaCmdMsg) == 16,             "TogaCmdMsg layout drifted");
 static_assert(offsetof(TogaCmdMsg, arg) == 12,      "TogaCmdMsg layout drifted");
 static_assert(offsetof(TogaCmdMsg, autoMode) == 11, "TogaCmdMsg layout drifted");
+static_assert(offsetof(TogaCmdMsg, profile) == 14,  "TogaCmdMsg layout drifted");
+static_assert(offsetof(TogaCmdMsg, textStrobe) == 15, "TogaCmdMsg layout drifted");
 
 // The grid's complete absolute state. Modules mirror this instead of
 // replaying steps, which is what makes drift structurally impossible.
@@ -520,6 +575,32 @@ struct TogaSyncMsg {
   uint8_t  rsvd9[1];            // 35  pad to the 4-byte alignment; reserved for future fields
   uint16_t autoDwellS;          // 36  auto-mode dwell per mode, seconds — set from the web UI, echoed for display
   uint16_t sweepPeriodS;        // 38  speed-sweep min→max→min period, seconds — set from the web UI, echoed for display
+};
+// Every mode's colour (hue offset added to its native colours), MAX_MODES slots.
+// Also carries the text-strobe colours, so the web UI AND the modules flash the
+// same colour the wall does (modules parse it too).
+struct TogaHueTabMsg {
+  TogaHeader h;                 //  0
+  uint8_t  count;               //  8  number of valid entries (TOTAL_ANIMS)
+  uint8_t  txOn;                //  9  bit k = text k has its own colour (else: the strobe colour)
+  uint8_t  rsvd[2];             // 10
+  uint8_t  hue[128];            // 12
+  uint8_t  txHue[8];            // 140 per text id (index = TOGA_TEXT_*)
+  uint8_t  txSat[8];            // 148 0 = white
+};
+static_assert(sizeof(TogaHueTabMsg) == 156, "TogaHueTabMsg layout drifted");
+// Each mode's NATIVE dominant hue (FastLED hue, from module_effects.h MODE_TABLE;
+// rainbow/random rows = 0). The web UI uses it to turn a picked colour into the
+// offset the grid stores: offset = picked hue - native hue.
+static const uint8_t TOGA_MODE_NATIVE_HUE[TOGA_EFFECT_COUNT] = {
+    0,  0,  0,  0,  0, 45,  0,  0,  0,  0,  0,  0, 20,148, 85,  0,
+    0,180, 60,200,  0,  0,  0,210,  5,100,150, 90,170, 96, 40,  0,
+  160,150,165,110,  0, 40, 35, 40, 40,112,160,160,150,  0,160, 24,
+  110, 96,150, 45, 38, 95,150, 40,  0,180,150,  0,150,160,  0, 96,
+   96,  0,  0,150,190, 18,  0,200,150,  0,160,170, 50, 25,130, 20,
+   30,  0,190, 90,  0, 20, 40,  0,145,200,120,200,155,190, 60,  0,
+   30,180,200, 10,160,  0,160,190,  0,200,150, 18,238, 90,120,140,
+  180,210, 14,190, 60, 28,  0,180,  0,200,  0, 28,  0, 28,236,130
 };
 static_assert(sizeof(TogaSyncMsg) == 40,              "TogaSyncMsg layout drifted");
 static_assert(offsetof(TogaSyncMsg, animSpeed) == 8,  "TogaSyncMsg layout drifted");
@@ -658,6 +739,10 @@ static inline bool togaCheck(const uint8_t* data, int len, uint8_t type, size_t 
 }
 
 // Is this command addressed to me? group 0 means everyone.
+static inline bool togaParseHueTab(const uint8_t* data, int len, TogaHueTabMsg* out){
+  if(!togaCheck(data, len, TOGA_MSG_HUETAB, sizeof(TogaHueTabMsg))) return false;
+  memcpy(out, data, sizeof(*out)); return true;
+}
 static inline bool togaParseCmd(const uint8_t* data, int len, uint8_t myGroup, TogaCmdMsg* out){
   if(!togaCheck(data, len, TOGA_MSG_CMD, sizeof(TogaCmdMsg))) return false;
   memcpy(out, data, sizeof(*out));
@@ -710,6 +795,7 @@ static inline bool togaParseModCfg(const uint8_t* data, int len, const uint8_t m
 // (togaAddPeer), so the STA interface has to exist. It never associates — it
 // just rides along on the AP's channel, which is the one we want anyway.
 static inline void togaApBegin(){
+  WiFi.persistent(false);                     // RAM-only config, no NVS writes (see togaWifiBegin)
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);                       // an AP that sleeps drops the bus
   // Pin the SoftAP IP/DHCP explicitly BEFORE softAP(). Same address as the
@@ -744,6 +830,15 @@ static inline const char* togaModuleHost(){
 // hostname is how this board is identified on the network — it must be unique
 // per board (see togaModuleHost above for how modules derive theirs).
 static inline void togaWifiBegin(const char* hostname){
+  // RAM-only WiFi config. With the default (persistent) storage every WiFi.begin()
+  // writes the credentials to NVS — and the write happens asynchronously in the
+  // WiFi task, with the flash cache disabled. If the LED driver's RMT interrupt
+  // fires in that window it executes flash-resident code and the chip panics
+  // ("Cache disabled but cached memory region accessed"). The grid rebooted every
+  // few retries whenever the controller was off; connected nodes never retry, so
+  // it only ever showed without the controller. Nothing needs the stored creds —
+  // we pass them on every begin() anyway.
+  WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);       // broadcast is never retried — don't sleep through it
   WiFi.setHostname(hostname);
@@ -780,7 +875,12 @@ static inline void togaWifiTick(){
     else   Serial.println(F("wifi: lost the AP — still on the bus, retrying"));
   }
   if(up) return;
-  if(t - lastTry < 10000) return;        // 10s: slow enough to be free, fast enough to be there
+  // 30s, not 10s: every attempt makes the WiFi task touch flash, and a flash op
+  // that lands inside FastLED.show() can panic the chip (RMT ISR runs flash code
+  // while the cache is off). Fewer attempts = fewer chances; a reboot costs ~2s
+  // and lands back on the same mode, and this only ever happens without a
+  // controller. (Holding the flash lock from loop() was tried and froze the show.)
+  if(t - lastTry < 30000) return;
   lastTry = t;
   WiFi.begin(TOGA_AP_SSID, TOGA_AP_PASS, TOGA_CHANNEL);
 }

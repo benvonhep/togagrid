@@ -41,7 +41,7 @@
 #define PIN_Y5 19
 
 // ── Animation registry ──
-#define TOTAL_ANIMS  107     // number of animation modes (0..TOTAL_ANIMS-1)
+#define TOTAL_ANIMS  128     // number of animation modes (0..TOTAL_ANIMS-1); 107..122 Drahthaus pack, 123..126 test pack, 127 Schwarz
 #define MAX_MODES    128     // upper bound for per-mode arrays (>= TOTAL_ANIMS)
 #define ANIM_DURATION 10000  // (reserved)
 

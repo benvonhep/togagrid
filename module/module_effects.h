@@ -38,7 +38,8 @@ enum {
   A_SOLID=0, A_GRADIENT, A_WAVE, A_PLASMA, A_NOISE, A_RAIN, A_TWINKLE, A_COMET,
   A_PULSE, A_SWEEP, A_BURST, A_FLASH, A_STRIPES, A_BLOCKS, A_CHASE, A_VU,
   A_FIRE, A_BLINK,
-  A_MARQUEE, A_QUAKE, A_COLLIDE, A_SWARM, A_SPIN, A_GAZE
+  A_MARQUEE, A_QUAKE, A_COLLIDE, A_SWARM, A_SPIN, A_GAZE,
+  A_NEON, A_STORM          // Drahthaus: neon tube striking (107), thunderstorm (112)
 };
 
 // ── Flags ──
@@ -74,7 +75,7 @@ struct ModeSpec {
 //                RAIN/CHASE/MARQUEE, explosive→BURST, chaotic→COMET/SWARM.
 //   · RHYTHM   — steady vs pulsing vs stochastic vs beat-locked, via speed/flags.
 // PROGMEM: read one row per frame.
-#define MOD_MODE_COUNT 107
+#define MOD_MODE_COUNT 128
 static const ModeSpec MODE_TABLE[MOD_MODE_COUNT] PROGMEM = {
   /* 0 setupGrid       */ { A_BLINK,     0,  0, 100,  0, 0,                             0, 3 },  // static red/green lattice (special-cased in modRender)
   /* 1 heartbeat       */ { A_PULSE,     0,255, 180,  0, FLAG_SYM,                     25, 4 },  // red double-thump rings from centre (more/wider rings, low-bri visible)
@@ -183,6 +184,29 @@ static const ModeSpec MODE_TABLE[MOD_MODE_COUNT] PROGMEM = {
   /*104 morphSwarm     */ { A_SWARM,     0,210,  90, 14, FLAG_RAINBOW,                 40, 0 },  // swarm morphing between figures
   /*105 gravLens       */ { A_TWINKLE, 200,120,  80, 40, FLAG_SPARKLE,                 35,120},  // starfield bent around a black hole
   /*106 celestialDragon*/ { A_COMET,   150,200, 100,  1, 0,                            50, 0 },  // long 3D serpent-dragon
+  // ── Drahthaus concert pack (107..122) — grid: animations/anim_konzert.h ──
+  /*107 konzertMarker  */ { A_NEON,     18,230, 100,  0, 0,                              0, 0 },  // the submarine marker: an orange neon tube that switches on like the wall's
+  /*108 dh100Elefanten */ { A_MARQUEE, 238,170,  70,  0, 0,                             60, 8 },  // pink procession passing through
+  /*109 dhWhereDidYouSleep*/{ A_PULSE,  90,200,  20,  0, FLAG_SYM,                     60, 2 },  // = mitosis (row 8): slow green cell split/breathe
+  /*110 dhEcholot      */ { A_BURST,   120,230,  90,  0, FLAG_SYM|FLAG_BEAT,           90, 6 },  // sonar pings radiating from the centre
+  /*111 dhCryMeARiver  */ { A_RAIN,    140,220,  60,  6, 0,                            55, 0 },  // teal river streaming down, drops
+  /*112 dhNichtErschrecken*/{ A_STORM, 180,140, 100,  0, 0,                              0, 0 },  // thunderstorm: random multi-flash strikes, white/blue/violet
+  /*113 dhAlleGegenAlle*/ { A_COMET,   210,220,  90,  3, FLAG_SYM,                     80, 0 },  // = shockwaveChain (row 10): blue-purple comet flow from centre
+  /*114 dhSabbia1      */ { A_NOISE,    14,230,  90,  0, FLAG_SPARKLE,                 40,12 },  // sandstorm: red-orange dunes drifting, grainy
+  /*115 dhSabbia2      */ { A_COMET,   190,220,  90,  3, FLAG_REVERSE,                 70, 0 },  // = vortex (row 3): blue-purple flow outer→inner
+  /*116 dhMuecke       */ { A_COMET,    60,120, 160,  1, 0,                            25, 0 },  // one tiny erratic bright dot
+  /*117 dhRoentgenauge */ { A_GAZE,     28,200,  80,  0, 0,                           140, 0 },  // x-ray eye: amber iris gaze
+  /*118 dhDienstagRave */ { A_BLOCKS,  255,230, 110,  0, FLAG_SYM|FLAG_BEAT,            6, 0 },  // = quadMirror (row 120): mirrored random blocks on the beat
+  /*119 dhSong12       */ { A_SWEEP,   180,200,  80,  0, FLAG_SYM,                     40,50 },  // placeholder: square tunnel outward
+  /*120 quadMirror     */ { A_BLOCKS,  255,230, 110,  0, FLAG_SYM|FLAG_BEAT,            6, 0 },  // DJ: mirrored random blocks on the beat
+  /*121 squareSpiral   */ { A_CHASE,   200,220, 100,  0, FLAG_RAINBOW,                 40, 0 },  // DJ: a spiral drawing itself in and out
+  /*122 gridPulse      */ { A_STRIPES,   0,220, 120,  0, FLAG_BEAT|FLAG_RAINBOW,       32,50 },  // DJ: 8 scrolling bands = the checkerboard pulse
+  // ── Drahthaus test pack (123..126) ──
+  /*123 dhRiesenschrift*/ { A_MARQUEE,  28,230,  60,  0, 0,                            90, 6 },  // giant DRAHTHAUS letters scrolling: orange blocks marching
+  /*124 dhElephantRoom */ { A_MARQUEE,   0,230,  70,  0, FLAG_RAINBOW,                 55,10 },  // word-art rainbow letters marching
+  /*125 dhMonogramm    */ { A_PULSE,    28,230, 100,  0, FLAG_SYM|FLAG_BEAT,           90, 2 },  // DH monogram pulsing on the beat
+  /*126 dhElefantenKopf*/ { A_PULSE,   236,170,  50,  0, FLAG_SYM,                    120, 2 },  // giant pink elephant head: slow flapping breath
+  /*127 schwarz        */ { A_SOLID,   130,170, 100,  0, 0,                              0, 0 },  // dark standby — special-cased to BLACK in modRender (row only keeps the count)
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -797,6 +821,65 @@ static void archGaze(const ModeSpec& s, uint32_t t, uint16_t n){
   drawFront(clamp01(pos), 0.10f, modC(s, s.hue + 20, 255), open * dim);                  // iris
 }
 
+// Neon tube (107): the strip is the tube and it is SWITCHED ON like the wall's
+// submarine: single short flashes with long dark pauses first, then the strikes
+// come faster and turn into stuttering bursts (with a phosphor afterglow) until
+// the tube catches (~4.5 s) and hums. Afterwards a short nervous stutter now and
+// then. Re-entering the mode (no call for 0.4 s) switches it on afresh.
+// Real time, so it is the same at any Speed.
+static void archNeon(const ModeSpec& s, uint32_t t, uint16_t n){
+  static uint32_t lastT=0, start=0, nextEv=0, relapseAt=0; static uint8_t flashes=0, relapse=0;
+  static bool on=false, lit=false; static float inst=0.f, glow=0.f;
+  float dms=(float)(t-lastT);
+  if(t-lastT>400){ start=t+300+random(200); nextEv=start; lit=false; on=false; flashes=0; relapse=0; glow=0.f; dms=20.f; }
+  lastT=t;
+  if(t<start) return;
+  if(!lit){
+    float p=(float)(t-start)/4500.f; if(p>1.f) p=1.f;
+    if(t>=nextEv){
+      if(on){ on=false;
+        if(flashes>0) nextEv=t+12+random(15+(int)(35.f*(1.f-p)));
+        else if(p>=1.f){ lit=true; on=true; inst=1.f; relapseAt=t+9000+random(22000); }
+        else { float g=(1.f-p)*(1.f-p)*1100.f+70.f; nextEv=t+(uint32_t)(g*(0.45f+1.1f*random8()/255.f)); }
+      } else {
+        if(flashes==0) flashes=1+random(1+(int)(p*p*8.f));
+        flashes--; on=true;
+        inst=(random8()/255.f<0.3f+0.5f*p) ? 1.f : 0.3f+0.6f*random8()/255.f;
+        nextEv=t+14+random(16+(int)(90.f*p*p));
+      }
+    }
+  } else if(relapse>0){
+    if(t>=nextEv){ on=!on;
+      if(on){ inst=0.45f+0.55f*random8()/255.f; nextEv=t+18+random(70); }
+      else { relapse--; nextEv=t+14+random(random8()<38?400:60); }
+      if(relapse==0){ on=true; inst=1.f; relapseAt=t+9000+random(22000); } }
+  } else {
+    on=true; inst=0.93f+0.07f*(inoise8((uint16_t)(t/3))/255.f);
+    if(t>=relapseAt){ relapse=2+random(6); on=false; nextEv=t+15; }
+  }
+  if(on) glow=inst; else glow*=expf(-dms/20.f);
+  if(glow<=0.004f) return;
+  modWhole(modC(s, s.hue, 255), glow);
+}
+// Thunderstorm (112): almost dark; strikes at random (0.3–4 s apart) as a burst
+// of 2–7 flashes with random gaps and strengths. A flash lights the whole strip
+// or one random section (the part of the bolt this strip "sees"), white to
+// blue/violet; the strike's colour is drawn fresh each time.
+static void archStorm(const ModeSpec& s, uint32_t t, uint16_t n){
+  (void)n;
+  static uint32_t nextStrike=0, flashEnd=0, nextFlash=0; static int left=0; static float inten=0, p0=0, p1=1; static uint8_t hue=170, sat=100;
+  if(left==0 && t>=nextStrike){ left=2+random(6); nextFlash=t; hue=150+random(70); sat=random(2)?0:120+random(120); }
+  if(left>0 && t>=nextFlash){
+    flashEnd=t+18+random(70); inten=0.35f+0.65f*random8()/255.f;
+    if(random(3)==0){ p0=0.f; p1=1.f; } else { p0=random8()/255.f*0.7f; p1=p0+0.15f+random8()/255.f*0.35f; }
+    left--; nextFlash=flashEnd+15+random(left>0?220:1);
+    if(left==0) nextStrike=t+300+random(3700);
+  }
+  modWhole(CRGB(CHSV(s.hue,220,255)), 0.035f);                 // the dark sky
+  if(t<flashEnd){ CRGB c = sat==0 ? CRGB(255,255,255) : CRGB(CHSV(hue,sat,255));
+    modBand(p0, fminf(p1,1.f), c, inten*(0.6f+0.4f*random8()/255.f)); }
+}
+
 // ── Moving spot: one-shot trigger (TOGA_F_SPOT rising edge), NOT a MODE_TABLE
 //    entry. Each controller spot-key press launches ONE bright soft dot that
 //    glides the strip once (short warm trail) and then vanishes, returning to
@@ -944,6 +1027,8 @@ static void modDispatch(const ModeSpec& s, uint32_t t){
     case A_SWARM:    archSwarm(s, t, Mn);    break;
     case A_SPIN:     archSpin(s, t, Mn);     break;
     case A_GAZE:     archGaze(s, t, Mn);     break;
+    case A_NEON:     archNeon(s, t, Mn);     break;
+    case A_STORM:    archStorm(s, t, Mn);    break;
     default:         archSolid(s, t, Mn);    break;
   }
   if(s.flags & FLAG_SPARKLE){
@@ -959,6 +1044,7 @@ void modRender(uint16_t mode, uint32_t t, uint16_t n){
 
   fill_solid(fx, gNumLeds, CRGB::Black);
   if(mode == TOGA_EFFECT_OFF || mode >= MOD_MODE_COUNT) return;  // OFF / out of range → black
+  if(mode == TOGA_MODE_SCHWARZ) return;                   // dark standby: the wall shows its dot, strips stay black
 
   if(mode == 0){                                          // setupGrid calibration (static)
     modColRGB(0, 140, 0, 0);

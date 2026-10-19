@@ -16,13 +16,13 @@ Befehle per ESP-NOW an das Grid. Quelle: [`controller.ino`](controller.ino).
 ```
  ┌───────┬───────┬───────┬───────┐
  │ 12    │ 8     │ 4     │ 0     │
- │ Auto  │ Farbe │ frei  │ Mod + │
+ │ Auto  │ Farbe │SpdSwp │ Mod + │
  ├───────┼───────┼───────┼───────┤
  │ 13    │ 9     │ 5     │ 1     │
- │Hellig.│HueSpd │ frei  │ Mod − │
+ │Hellig.│HueSpd │ Spot  │ Mod − │
  ├───────┼───────┼───────┼───────┤
  │ 14    │ 10    │ 6     │ 2     │
- │Geschw.│ frei  │Black- │ Beat  │
+ │Geschw.│StrSpd │Black- │ Beat  │
  │       │       │ out   │       │
  ├───────┼───────┼───────┼───────┤
  │ 15    │ 11    │ 7     │ 3     │
@@ -38,15 +38,15 @@ Befehle per ESP-NOW an das Grid. Quelle: [`controller.ino`](controller.ino).
 | 1  | **Modus −** | tippen | vorheriger Modus |
 | 2  | **Beat-Tap** (Tempo) | im Takt tippen (~4 Taps) · 1× tippen + 2 s warten = aus | Tap-Tempo → Helligkeits-Puls (**nicht** Geschwindigkeit) |
 | 3  | **Strobe** | halten | weiß/farbige Blitze; bei jedem Druck einer von 5 Looks (Quadrate · Voll · Streifen · Ringe · Viertel) |
-| 4  | – | – | frei |
-| 5  | – | – | frei |
+| 4  | **Speed-Sweep** | tippen (Umschalter) | Geschwindigkeit läuft min→max→min (Periode in der Web-UI) |
+| 5  | **Spot** | tippen / halten | Lauflicht-Punkt auf den Modulen; gehalten auch Quadrat-Tunnel am Grid |
 | 6  | **Blackout** | tippen (Umschalter) | alles schwarz (Grid **und** Module); erneut tippen = zurück. Modus lässt sich weiter wechseln (läuft im Dunkeln weiter) und Strobes blitzen durch. Nur diese Taste + Strobe/Modus-Strobe/Castle/Auto bleiben am Pad beleuchtet |
 | 7  | **Modus-Strobe** | halten | blinkt die aktuelle Animation |
 | 8  | Parameter: **Farbe** | 2 s halten → einstellen | Hue-Basis, danach `+`/`−` ändern |
 | 9  | Parameter: **Hue-Speed** | 2 s halten → einstellen | Auto-Farbrotation; **pro Modus gespeichert** |
-| 10 | – | – | frei |
-| 11 | Strobe **„CASTLE / 2026"** | halten | statischer Text-Strobe |
-| 12 | **Auto-Modus** | tippen | schaltet durch 4 Stimmungen (1→2→3→4→1), blinkt in deren Farbe; Wechseltempo = Geschwindigkeit (14) |
+| 10 | **Strobe-Tempo** | tippen → einstellen | danach `+`/`−` (ein Tempo für alle Strobes) |
+| 11 | Strobe **„CASTLE / 2026"** · **Drahthaus: Text-Ebene** | halten · tippen | Profil Togalicht: statischer Text-Strobe. Profil Drahthaus: Text-Strobe-Ebene (siehe [BEFEHLE_DRAHTHAUS.md](../BEFEHLE_DRAHTHAUS.md)) |
+| 12 | **Auto-Modus** | tippen | schaltet durch 5 Stimmungen (1→…→5→1), blinkt in deren Farbe; Wechseltempo = Geschwindigkeit (14) |
 | 13 | **Helligkeit** (3-stufig) | tippen / 2 s / 10 s halten | tippen = **global**, 2 s = **Modus-Faktor**, 10 s = **Controller-Pad** — siehe unten |
 | 14 | Parameter: **Geschwindigkeit** | 2 s halten → einstellen | **pro Modus gespeichert** |
 | 15 | Parameter: **Strobe-Farbe** | 2 s halten → einstellen | danach `+`/`−` ändern |
@@ -55,10 +55,14 @@ Befehle per ESP-NOW an das Grid. Quelle: [`controller.ino`](controller.ino).
 
 | Kombi | Funktion |
 |-------|----------|
-| **3 halten + `+`/`−`** (Strobe + 0/1) | Pause zwischen den Strobe-Blitzen regeln (30–250 ms) |
+| **3 halten + `+`/`−`** (Strobe + 0/1) | Strobe-Tempo regeln (gilt für alle Strobes) |
+| **0 + 1 + 2 fünf Sekunden halten** (Mod+ · Mod− · Beat) | **Profil wählen** — das Pad blinkt rot, dann unten links: **12 = Togalicht**, **13 = Drahthaus**. 10 s ohne Wahl = abbrechen |
 
-Bewusst eine Modifier-Kombi auf einer **belegten** Taste, damit 4 · 5 · 10
-frei bleiben (6 ist jetzt Blackout).
+## Profile: Togalicht / Drahthaus
+
+Diese Seite beschreibt das Profil **Togalicht**. Alles, was im Profil **Drahthaus**
+anders ist (Setlist auf Mod+/−, Text-Strobe-Ebene auf Taste 11, eigene Auto-Listen,
+keine Modus-Nummern), steht in [BEFEHLE_DRAHTHAUS.md](../BEFEHLE_DRAHTHAUS.md).
 
 **Netz.** Diese Einheit macht den AccessPoint `togalights` auf Kanal 1 auf — dem
 Kanal, auf dem der ESP-NOW-Bus ohnehin läuft. Jeder Knoten ist damit gleichzeitig
@@ -100,7 +104,7 @@ sind über denselben AP erreichbar (Details: [BEFEHLE.md](../BEFEHLE.md) §9).
   **Helligkeit**, nicht die Geschwindigkeit.
   **Aus:** einmal tippen und 2 s nicht mehr — die Taste hört auf zu pulsieren.
   Ab zwei Taps ist es immer ein Tempo, nie ein Ausschalten.
-- **Strobes (3 Strobe, 7 Modus-Strobe, 11 Castle-Strobe):** wirken nur solange gehalten (momentary).
+- **Strobes (3 Strobe, 7 Modus-Strobe, 11 Castle-Strobe / Drahthaus-Texte):** wirken nur solange gehalten (momentary).
 
 ## Parameter-Ziele (ESP-NOW `target`)
 

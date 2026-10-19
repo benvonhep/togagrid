@@ -186,8 +186,10 @@ static inline uint8_t activeEffect() {
   // else is a pin the module holds on its own — a grid mode (<90), OFF, a local
   // standalone effect (TOGA_EFFECT_LOCAL_BASE+k) or a dance auto (…AUTO_BASE+k);
   // all pass straight through to modRenderAny(), which routes each range.
+  // v11: range is TOGA_EFFECT_COUNT, not a hard-coded 90 — with 90 every grid
+  // mode from 90 up made a FOLLOW module fall back to mode 0.
   if (gEffectPin == EFFECT_FOLLOW)
-    return (gAnimIndex >= 0 && gAnimIndex < 90) ? (uint8_t)gAnimIndex : 0;
+    return (gAnimIndex >= 0 && gAnimIndex < TOGA_EFFECT_COUNT) ? (uint8_t)gAnimIndex : 0;
   return gEffectPin;
 }
 
@@ -199,12 +201,14 @@ static inline bool moduleIndependent() { return gEffectPin != EFFECT_FOLLOW; }
 // serial so the accepted set stays in one place: grid mode, OFF, FOLLOW, a local
 // standalone effect, or a dance auto-program.
 static inline bool validEffectPin(uint8_t e) {
-  return e < 90 || e == TOGA_EFFECT_OFF || e == TOGA_EFFECT_FOLLOW
+  return e < TOGA_EFFECT_COUNT || e == TOGA_EFFECT_OFF || e == TOGA_EFFECT_FOLLOW
       || togaIsLocalEffect(e) || togaIsAutoEffect(e);
 }
 
 // ── ESP-NOW inbound state ──
 volatile bool     espStrobe = false, espModeStrobe = false, espCastleStrobe = false;
+volatile uint8_t  espTextStrobe = 0;
+volatile uint8_t  gTxOn = 0, gTxHue[8] = {0}, gTxSat[8] = {0};   // text-strobe colours, from the grid's hue table (v11)          // TOGA_TEXT_* while a text key is held (v11); flashed like castle
 volatile bool     espBlackout = false;        // latched blackout, rides the flags like the strobes
 volatile bool     espSpot = false;            // momentary moving-spot, rides the flags like the strobes
 volatile uint32_t espLastHeartbeat = 0;
@@ -224,9 +228,15 @@ void onReceive(const uint8_t* mac, const uint8_t* data, int len) {
     espStrobe        = (m.flags & TOGA_F_STROBE)        != 0;
     espModeStrobe    = (m.flags & TOGA_F_MODE_STROBE)   != 0;
     espCastleStrobe  = (m.flags & TOGA_F_CASTLE_STROBE) != 0;
+    espTextStrobe    = (m.textStrobe <= TOGA_TEXT_COUNT) ? m.textStrobe : 0;
     espBlackout      = (m.flags & TOGA_F_BLACKOUT)      != 0;
     espSpot          = (m.flags & TOGA_F_SPOT)          != 0;
     espLastHeartbeat = millis();
+    return;
+  }
+  TogaHueTabMsg ht;
+  if (togaParseHueTab(data, len, &ht)) {          // only the text colours matter here
+    gTxOn = ht.txOn; for (int i = 0; i < 8; i++) { gTxHue[i] = ht.txHue[i]; gTxSat[i] = ht.txSat[i]; }
     return;
   }
   TogaSyncMsg s;
@@ -277,6 +287,7 @@ void applySync(const TogaSyncMsg& s) {
 
 // ── NVS ──
 Preferences prefs;
+static bool gEffvMigrated = false;   // loadConfig() shifted an old-range effect pin → persist once (v11)
 
 void loadConfig() {
   prefs.begin("module", true);
@@ -309,7 +320,23 @@ void loadConfig() {
   // sentinel, so a module previously pinned to blackout stays black after this
   // update instead of rendering mode 8 (blackHole).
   if (gEffectPin == 8) gEffectPin = TOGA_EFFECT_OFF;
+  // v11 one-time migration: the local/auto effect ranges moved from 100../120..
+  // to 140../160.. (they collided with grid modes 100+). A pin stored by an older
+  // build in the OLD ranges can only have been a local/auto effect (grid pins were
+  // capped at <90 back then), so shift it; "effv" marks the schema so a genuine
+  // grid-mode pin of 100..122 written by THIS build is never touched again.
+  { uint8_t effv = prefs.getUChar("effv", 1);
+    if (effv < 2) {
+      if (gEffectPin >= 100 && gEffectPin < 100 + TOGA_LOCAL_COUNT)      gEffectPin = (uint8_t)(gEffectPin - 100 + TOGA_EFFECT_LOCAL_BASE);
+      else if (gEffectPin >= 120 && gEffectPin < 120 + TOGA_LOCAL_AUTO_COUNT) gEffectPin = (uint8_t)(gEffectPin - 120 + TOGA_EFFECT_AUTO_BASE);
+      gEffvMigrated = true;   // write back below, once the namespace is reopened read-write
+    } }
   if (!validEffectPin(gEffectPin)) gEffectPin = EFFECT_FOLLOW;   // incl. any stale value
+  if (gEffvMigrated) {                       // persist the shifted pin + stamp the schema, once
+    prefs.begin("module", false);
+    prefs.putUChar("eff", gEffectPin); prefs.putUChar("effv", 2);
+    prefs.end(); gEffvMigrated = false;
+  }
   gGain = constrain((int)gGain, 10, 200);
   if (gGap < TOGA_GAP_OFF) gGap = TOGA_GAP_OFF;   // 0 in NVS (never written) → every LED
   if (gFloorFlow > TOGA_FLOOR_MAX) gFloorFlow = TOGA_FLOOR_OFF;   // stale/garbage → off
@@ -329,6 +356,7 @@ bool saveConfig() {
   prefs.putUShort("h",   cfgH);
   prefs.putUChar("pin",  cfgPin);
   prefs.putUChar("eff",  gEffectPin);
+  prefs.putUChar("effv", 2);                 // effect-id schema (v11 ranges) — see loadConfig()
   prefs.putUChar("lhue", gLocalHue);
   prefs.putUChar("gain", gGain);
   prefs.putUChar("follow", gFollowMask);
@@ -1220,12 +1248,35 @@ void loop() {
   // `flip = now + on`: the period cannot be stretched by this strip's FastLED.show(),
   // so a 32px module and the wall flash in lockstep. See togaSquareOn() / v6.
   static bool     csHeldPrev = false; static uint32_t csStart = 0;
-  bool castleHeld = senderAlive && espCastleStrobe && (gFollowMask & TOGA_FOLLOW_STROBE);
+  // v11: the Drahthaus text strobes (profile key 13 layer) flash here too — same
+  // rhythm, same tint; the wall draws the text, we are the room-wide pulse.
+  bool castleHeld = senderAlive && (espCastleStrobe || espTextStrobe) && (gFollowMask & TOGA_FOLLOW_STROBE);
   if (castleHeld && !csHeldPrev) csStart = t;   // phase origin: this press began here
   csHeldPrev = castleHeld;
   if (castleHeld) {
     bool csOn = togaSquareOn(t, csStart, gStrobeOnMs, gStrobeOffMs);
-    flashSolid(csOn ? CRGB(CHSV((uint8_t)(gHueBase + gHueAuto), 255, 220)) : CRGB::Black, STROBE_BRI);
+    uint8_t tx = espTextStrobe;
+    if (!tx) { flashSolid(csOn ? CRGB(CHSV((uint8_t)(gHueBase + gHueAuto), 255, 220)) : CRGB::Black, STROBE_BRI); return; }
+    // Drahthaus text strobe: the wall's colour for this text, and a pattern that
+    // echoes the text's shape along the strip (3 words, 2 lines, 3x3 …).
+    CRGB c = (tx < 8 && (gTxOn & (1 << tx))) ? (gTxSat[tx] ? CRGB(CHSV(gTxHue[tx], gTxSat[tx], 255)) : CRGB(255, 255, 255))
+                                            : (gStrobeHue == 0 ? CRGB(255, 255, 255) : CRGB(CHSV(gStrobeHue, 255, 255)));
+    uint32_t per = (uint32_t)gStrobeOnMs + gStrobeOffMs; if (!per) per = 1;
+    uint32_t k = (uint32_t)(t - csStart) / per;                 // flash number in this press
+    fill_solid(leds, gNumLeds, CRGB::Black);
+    if (csOn) for (uint16_t i = 0; i < gNumLeds; i++) {
+      float p = gNumLeds > 1 ? (float)i / (gNumLeds - 1) : 0.f; bool lit = true;
+      switch (tx) {
+        case TOGA_TEXT_ALLE:       lit = p < 0.28f || (p > 0.36f && p < 0.64f) || p > 0.72f; break;   // three words
+        case TOGA_TEXT_ELEFANT:    lit = (k & 1) ? p < 0.45f : p > 0.55f; break;                     // steps left / right
+        case TOGA_TEXT_DH_QUADRAT: { int b = (int)(p * 8.99f); lit = ((b + k) & 1) == 0; } break;     // checker, swaps per flash
+        case TOGA_TEXT_DRAHT_HAUS: lit = p < 0.47f || p > 0.53f; break;                              // two lines
+        default: break;                                                                              // RAVE: all
+      }
+      if (lit) leds[i] = c;
+    }
+    FastLED.setBrightness((uint8_t)constrain((int)lroundf(STROBE_BRI * (gGain / 100.0f)), 1, 255));
+    FastLED.show();
     return;
   }
 

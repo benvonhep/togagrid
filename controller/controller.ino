@@ -30,6 +30,11 @@
 //    and use +/-. Faster = shorter period; on:off ratio is a fixed 1:2 (typical strobe).
 //  Auto (0): tap to cycle the four moods 1→2→3→4→1 (button blinks in the
 //    mood's colour). Any manual mode change with +/- turns it off again.
+//  PROFILE (v11): hold phys 0+1+2 (Mode+ / Mode− / Beat) 5s → pad blinks red,
+//    phys 12 = Togalicht, phys 13 = Drahthaus. Drahthaus: +/- walk the SETLIST
+//    (edited on the phone page), no mode numbers on the wall, and phys 11 (Castle)
+//    TAPS open the text-strobe layer: phys 0..5 = RAVE! · ALLE GEGEN ALLE · Elefant ·
+//    DHA/RTU/AHS · DRAHT/HAUS (hold = strobe), 11 again = close.
 //
 //  Params (logical):  4 Helligkeit (own machine) · 1 Color · 12 Strobe-colour · 8 Speed · 5 Hue-speed · 9 Strobe-speed (tap-toggle)
 // ═══════════════════════════════════════════════════════
@@ -125,6 +130,7 @@ int paramTarget(int b){ switch(b){case 8:return TOGA_P_SPEED;
 bool isParamBtn(int b){ return paramTarget(b)>=0; }
 
 bool     btnDown[16]={}; uint32_t btnDownT[16]={};
+bool     plusHit=false, minusHit=false;   // +/- press latched in handleKey (see there)
 
 // ── Auto mood (button 0) ──
 // Tap cycles 1→2→3→4→1; there is no "off" in the cycle. It turns off only when
@@ -146,6 +152,42 @@ bool gBlackout=false;
 // senderAlive, so a controller that goes away releases the sweep.
 bool gSweep=false;
 
+// ── Profile: Togalicht / Drahthaus (v11) ──
+// Owned HERE (NVS) and sent on every packet; the grid and modules only follow.
+// Togalicht = everything as before. Drahthaus = the concert: +/- walk the setlist
+// below (absolute TOGA_CMD_MODESET jumps), the wall shows no mode numbers, and
+// key 13 (phys 11, Castle) opens the text-strobe layer instead of CASTLE/2026.
+// Every other key is identical in both profiles.
+uint8_t  gProfile=TOGA_PROFILE_TOGA;
+int16_t  togaModeBefore=-1;          // mode the wall was on when we left Togalicht → restored on return
+// Profile-select gesture: the top row's three left keys (phys 0/1/2 = logical
+// 3/7/11: Mode+ / Mode- / Beat) held together for PROFILE_HOLD_MS. The pad then
+// blinks red and the bottom row offers phys 12 (logical 0) = Togalicht, phys 13
+// (logical 4) = Drahthaus. Side effect, accepted: before the 5s are up, the
+// first press already stepped +1/-1 (net zero) and sent one beat tap.
+#define PROFILE_HOLD_MS     5000
+#define PROFILE_SEL_TIMEOUT 10000
+bool     profSel=false; uint32_t profSelT=0;
+// Text-strobe layer (Drahthaus only): tap 13 → only the six text keys light;
+// HOLD one → that text strobes on the wall (textStrobe rides every packet);
+// tap 13 again → back. No timeout: a song may want several texts in a row.
+// TEXT_KEYS[i] = logical key for text id i+1. They sit in the BOTTOM TWO ROWS
+// (phys 2,6,14 / 3,7,15), so the top half stays fully live inside the layer:
+// Mode± (phys 0/1), Colour (8), Hue-speed (9), Brightness (13), Auto (12),
+// Sweep (4), Spot (5) — plus Strobe-speed (phys 10) and the layer key (11).
+// Layer view (physical):   14 Elefant · 10 StrSpd · 6 ALLE · 2 RAVE!
+//                          15 StFarbe · 11 zu   · 7 DRAHT/HAUS · 3 DHA/RTU/AHS
+bool     textLayer=false; uint8_t textHeld=TOGA_TEXT_NONE;
+static const uint8_t TEXT_KEYS[TOGA_TEXT_COUNT]={11,10,8,15,14};     // phys 2 6 14 3 7 (RAVE ALLE Elefant Quadrat DRAHT/HAUS); phys 15 stays Strobe-colour
+static inline bool isTextKey(int b){ if(!textLayer) return false; for(uint8_t i=0;i<TOGA_TEXT_COUNT;i++) if(TEXT_KEYS[i]==b) return true; return false; }
+// Setlist: the Drahthaus mode order, editable on the phone page, kept in NVS.
+// Default order: 0 = the calibration view (setupGrid, mode 0), 1 = the marker
+// (the neon-lit submarine = "top of list"), then the songs, then the DJ modes.
+#define SETLIST_MAX 32
+uint8_t  setlist[SETLIST_MAX]; uint8_t setN=0; uint8_t setPos=0;
+bool     setDirty=false; uint32_t setDirtyAt=0;
+static const uint8_t SETLIST_DEFAULT[]={0,TOGA_MODE_SCHWARZ,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,34,57,66,102,73};
+
 // ── Interaction state machine ──
 enum { ST_DEFAULT, ST_ADJUST };
 int  state=ST_DEFAULT, activeBtn=-1, activeTarget=-1;
@@ -158,7 +200,9 @@ uint32_t C(uint8_t r,uint8_t g,uint8_t b){ return trellis.pixels.Color(r,g,b); }
 // Commands go out as a broadcast so the grid and every LED module hear the
 // same packet. The grid unicasts nothing back any more — it broadcasts its
 // absolute state, which is what keeps the meters below honest.
-volatile bool gsSyncSeen=false;                // have we ever heard the grid? drives the page's grid-freshness pill
+volatile bool gsSyncSeen=false;
+uint8_t  gModeHue[128]={}; uint8_t gModeHueN=0;
+uint8_t  gTxOn=0, gTxHue[8]={}, gTxSat[8]={};       // text-strobe colours (from the same table)    // grid's per-mode colour table (TOGA_MSG_HUETAB), for the colour pickers                // have we ever heard the grid? drives the page's grid-freshness pill
 volatile uint32_t gsSyncAt=0;                  // last sync arrival (millis) — the page's grid-freshness
 void onReceive(const uint8_t*mac,const uint8_t*data,int len){
   // A module announcing itself — park it in the ring, loop() merges it into the
@@ -169,6 +213,9 @@ void onReceive(const uint8_t*mac,const uint8_t*data,int len){
     if(nh!=hqTail){ memcpy((void*)&helloQ[hqHead],&hm,sizeof(hm)); hqHead=nh; }
     return;
   }
+  TogaHueTabMsg ht;
+  if(togaParseHueTab(data,len,&ht)){ memcpy(gModeHue,ht.hue,sizeof(gModeHue)); gModeHueN=ht.count;
+    gTxOn=ht.txOn; memcpy(gTxHue,ht.txHue,8); memcpy(gTxSat,ht.txSat,8); return; }
   TogaSyncMsg m;
   if(!togaParseSync(data,len,&m)) return;
   gsSyncSeen=true; gsSyncAt=millis();
@@ -184,18 +231,54 @@ void onReceive(const uint8_t*mac,const uint8_t*data,int len){
   gs.autoDwellS=m.autoDwellS; gs.sweepPeriodS=m.sweepPeriodS;   // web-UI timing header (echoed for display)
 }
 uint16_t txSeq=0;
+// The live pad state every packet carries (flags, auto, profile, held text).
+// Filled at SEND time — also for a delayed repeat, so a repeat can never
+// re-assert a strobe that was released in the meantime.
+void fillLive(TogaCmdMsg& m){
+  // Inside the text layer the strobe keys are text keys, so their flags stay off;
+  // the castle flag exists only in the Togalicht profile (Drahthaus: 13 = text layer).
+  // A key that is a TEXT key in the open layer never sends its normal flag.
+  auto live=[&](int k){ return !profSel && btnDown[k] && !isTextKey(k); };
+  m.flags=(live(15)?TOGA_F_STROBE:0)|(live(14)?TOGA_F_MODE_STROBE:0)
+         |((live(13)&&gProfile==TOGA_PROFILE_TOGA)?TOGA_F_CASTLE_STROBE:0)
+         |(gBlackout?TOGA_F_BLACKOUT:0)|(live(6)?TOGA_F_SPOT:0)|(gSweep?TOGA_F_SWEEP:0); // btn6 (phys 5): spot · logical 2 (phys 4): speed-sweep latch
+  m.autoMode=autoMode;                                       // state, carried by every packet
+  m.profile=gProfile;                                        // v11: profile + held text, every packet
+  m.textStrobe=textLayer?textHeld:TOGA_TEXT_NONE;
+}
+// Unicast retried in hardware; broadcast is unacked and never retried. The
+// heartbeat re-sends the strobe flags 10x/s anyway, but mode/param/beat are
+// one-shots and would be silently swallowed. Send them 3x under ONE seq —
+// receivers apply the first and drop the repeats. The repeats used to go out
+// back-to-back within microseconds, so one burst of interference (our own AP
+// talking to the phone, a beacon) ate all three and the press was simply lost.
+// Now: copy 1 at once (no added latency), copies 2/3 at +REP1/+REP2 ms from a
+// small queue serviced at the top of loop(). The grid dedupes the last 8 seqs,
+// so interleaved copies of two quick presses are still applied exactly once.
+#define REP1_MS 8
+#define REP2_MS 25
+#define REPQ_N  12
+struct RepSlot { TogaCmdMsg m; uint32_t due; uint8_t left; };
+RepSlot repQ[REPQ_N]={};
 void sendCmd(uint8_t cmd,uint8_t target,int16_t arg){
   TogaCmdMsg m={};
   togaInitHeader(m.h,TOGA_MSG_CMD,TOGA_GROUP_ALL,++txSeq);   // group 0 = everyone; targeting UI comes later
   m.cmd=cmd; m.target=target; m.arg=arg;
-  m.flags=(btnDown[15]?TOGA_F_STROBE:0)|(btnDown[14]?TOGA_F_MODE_STROBE:0)|(btnDown[13]?TOGA_F_CASTLE_STROBE:0)|(gBlackout?TOGA_F_BLACKOUT:0)|(btnDown[6]?TOGA_F_SPOT:0)|(gSweep?TOGA_F_SWEEP:0); // btn6 (phys 5): spot · logical 2 (phys 4): speed-sweep latch
-  m.autoMode=autoMode;                                       // state, carried by every packet
-  // Unicast retried in hardware; broadcast is unacked and never retried. The
-  // heartbeat re-sends the strobe flags 10x/s anyway, but mode/param/beat are
-  // one-shots and would be silently swallowed. Send them 3x under ONE seq —
-  // receivers apply the first and drop the repeats.
-  const int reps=(cmd==TOGA_CMD_HEARTBEAT)?1:3;
-  for(int i=0;i<reps;i++) esp_now_send(TOGA_BCAST,(const uint8_t*)&m,sizeof(m));
+  fillLive(m);
+  esp_now_send(TOGA_BCAST,(const uint8_t*)&m,sizeof(m));
+  if(cmd==TOGA_CMD_HEARTBEAT) return;
+  RepSlot* s=nullptr;                                        // free slot, else the one due soonest (queue full = a burst; oldest repeat is the least needed)
+  for(int i=0;i<REPQ_N;i++) if(!repQ[i].left){ s=&repQ[i]; break; }
+  if(!s){ s=&repQ[0]; for(int i=1;i<REPQ_N;i++) if((int32_t)(repQ[i].due-s->due)<0) s=&repQ[i]; }
+  s->m=m; s->due=millis()+REP1_MS; s->left=2;
+}
+void serviceRepeats(uint32_t t){
+  for(int i=0;i<REPQ_N;i++){ RepSlot& s=repQ[i];
+    if(!s.left || (int32_t)(t-s.due)<0) continue;
+    fillLive(s.m);                                           // same seq/cmd/arg, CURRENT flags
+    esp_now_send(TOGA_BCAST,(const uint8_t*)&s.m,sizeof(s.m));
+    if(--s.left) s.due=t+(REP2_MS-REP1_MS);
+  }
 }
 
 // ── Module manager: table maintenance + config send ─────
@@ -274,6 +357,9 @@ void handleModules(){
            ",\"chOk\":"+String(channelOk()?"true":"false")+
            ",\"gridSeen\":"+String((gsSyncSeen && (t-gsSyncAt)<2000)?"true":"false")+
            ",\"gridMode\":"+String(gsSyncSeen?gs.animIndex+1:0)+
+           ",\"gridIdx\":"+String(gsSyncSeen?gs.animIndex:-1)+
+           ",\"profile\":"+String(gProfile)+",\"setPos\":"+String(setPos)+",\"setlist\":"+setlistJson()+
+           ",\"mhue\":"+modeHueJson()+",\"nhue\":"+nativeHueJson()+",\"tcol\":"+textColJson()+
            ",\"autoInt\":"+String(gs.autoDwellS)+
            ",\"sweepInt\":"+String(gs.sweepPeriodS)+
            ",\"effects\":[";
@@ -374,6 +460,62 @@ void handleSet(){
   // actually took. The page shows what IS, not what we hope.
   server.send(200,"application/json","{\"sent\":true}");
 }
+// ── Drahthaus setlist / profile (v11) ──────────────────────────────────────
+// [[name,own,hue,sat],…] for text ids 1..TOGA_TEXT_COUNT
+String textColJson(){ String j="["; for(int k=1;k<=TOGA_TEXT_COUNT;k++){ if(k>1) j+=",";
+  j+="[\""+String(togaTextName(k))+"\","+String((gTxOn>>k)&1)+","+String(gTxHue[k])+","+String(gTxSat[k])+"]"; } return j+"]"; }
+// /api/textcol?id=1..5&h=0..255&s=0..255   or   &reset=1 (back to the strobe colour)
+void handleTextCol(){
+  if(!server.hasArg("id")){ server.send(400,"text/plain","id"); return; }
+  int id=server.arg("id").toInt(); if(id<1||id>TOGA_TEXT_COUNT){ server.send(400,"text/plain","range"); return; }
+  if(server.hasArg("reset")){ sendCmd(TOGA_CMD_TEXTCOL,(uint8_t)(id|0x80),0); gTxOn&=~(1<<id); }
+  else { int h=constrain(server.arg("h").toInt(),0,255), s=constrain(server.arg("s").toInt(),0,255);
+         sendCmd(TOGA_CMD_TEXTCOL,(uint8_t)id,(int16_t)((h<<8)|s)); gTxOn|=(1<<id); gTxHue[id]=h; gTxSat[id]=s; }
+  server.send(200,"application/json","{\"sent\":true}");
+}
+String modeHueJson(){ String j="["; for(int i=0;i<gModeHueN && i<TOGA_EFFECT_COUNT;i++){ if(i) j+=","; j+=String(gModeHue[i]); } return j+"]"; }
+String nativeHueJson(){ String j="["; for(int i=0;i<TOGA_EFFECT_COUNT;i++){ if(i) j+=","; j+=String(TOGA_MODE_NATIVE_HUE[i]); } return j+"]"; }
+// /api/modehue?m=<mode>&h=<0..255 hue offset> → the grid stores it as that mode's colour
+void handleModeHue(){
+  if(!server.hasArg("m")||!server.hasArg("h")){ server.send(400,"text/plain","m,h"); return; }
+  int md=server.arg("m").toInt(), h=server.arg("h").toInt();
+  if(md<0||md>=TOGA_EFFECT_COUNT||md>127||h<0||h>255){ server.send(400,"text/plain","range"); return; }
+  sendCmd(TOGA_CMD_PARAM,TOGA_P_MODEHUE,(int16_t)(md*256+h));
+  if(md<gModeHueN) gModeHue[md]=(uint8_t)h;                   // optimistic, the next table confirms
+  server.send(200,"application/json","{\"sent\":true}");
+}
+String setlistJson(){ String j="["; for(uint8_t i=0;i<setN;i++){ if(i) j+=","; j+=String(setlist[i]); } return j+"]"; }
+// GET /api/setlist            → the list   ·   /api/setlist?list=107,108,… → replace it
+void handleSetlist(){
+  if(server.hasArg("list")){
+    String l=server.arg("list"); uint8_t tmp[SETLIST_MAX]; uint8_t n=0; int from=0;
+    while(from<=(int)l.length() && n<SETLIST_MAX){
+      int to=l.indexOf(',',from); if(to<0) to=l.length();
+      String tok=l.substring(from,to); tok.trim(); from=to+1;
+      if(!tok.length()) continue;
+      int v=tok.toInt(); if(v<0||v>=TOGA_EFFECT_COUNT){ server.send(400,"text/plain","bad mode"); return; }
+      tmp[n++]=(uint8_t)v;
+    }
+    if(n==0){ server.send(400,"text/plain","empty"); return; }
+    uint8_t cur=setN?setlist[setPos]:255;
+    memcpy(setlist,tmp,n); setN=n;
+    setPos=0; for(uint8_t i=0;i<setN;i++) if(setlist[i]==cur){ setPos=i; break; }   // keep standing on the same song if it survived
+    saveSetlist();
+  }
+  server.send(200,"application/json","{\"profile\":"+String(gProfile)+",\"pos\":"+String(setPos)+",\"list\":"+setlistJson()+"}");
+}
+void handleJump(){
+  if(!server.hasArg("pos")){ server.send(400,"text/plain","no pos"); return; }
+  int p=server.arg("pos").toInt(); if(p<0||p>=setN){ server.send(400,"text/plain","bad pos"); return; }
+  setlistGoto((uint8_t)p);
+  server.send(200,"application/json","{\"sent\":true}");
+}
+void handleProfile(){
+  if(!server.hasArg("p")){ server.send(400,"text/plain","no p"); return; }
+  int p=server.arg("p").toInt(); if(p!=TOGA_PROFILE_TOGA && p!=TOGA_PROFILE_DRAHTHAUS){ server.send(400,"text/plain","bad p"); return; }
+  setProfile((uint8_t)p);
+  server.send(200,"application/json","{\"profile\":"+String(gProfile)+"}");
+}
 // Global timing header: auto-mode dwell and sweep period, in seconds. These live
 // on the GRID (it owns the show clock); we forward ABSOLUTE-value PARAM commands
 // and the grid echoes the applied values back in its sync for the page to show.
@@ -423,6 +565,29 @@ label{font-size:12px;color:#8a8a8a;min-width:52px}
 button{background:#2a2a2a;color:#eee;border:1px solid #3a3a3a;border-radius:5px;padding:4px 9px;font:inherit;font-size:12px;cursor:pointer}
 button:hover{background:#3a3a3a}
 .idf{margin-left:auto}
+.kz{background:#1c1c1c;border-radius:8px;padding:10px;margin-bottom:8px}
+.kz .tl{font-weight:600;color:#eee;margin-right:8px}
+.pb{padding:5px 12px;border-radius:14px}
+.pb.sel{background:#2ea043;border-color:#2ea043;color:#fff}
+.pb.dh.sel{background:#d85a00;border-color:#d85a00}
+.sr{display:flex;gap:6px;align-items:center;padding:4px 6px;border-radius:5px;border-left:3px solid transparent}
+.sr.cur{background:#263326}
+.sr.live{border-left-color:#2ea043}
+.sn{width:22px;color:#8a8a8a;font-size:12px;text-align:right}
+.sm{flex:1;font-size:14px}
+.sr button{padding:3px 7px}
+#sl{margin-top:6px}
+.kzadd{margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.kzadd select{max-width:220px}
+.mh{display:flex;gap:8px;align-items:center;padding:4px 6px;flex-wrap:wrap}
+.mh .sm{flex:1;min-width:150px}
+.mh input[type=color]{width:42px;height:28px;padding:0;border:1px solid #3a3a3a;background:#2a2a2a;border-radius:5px}
+.mh input.hx{width:78px;font-family:ui-monospace,monospace}
+.fold>summary{cursor:pointer;list-style:none;display:flex;gap:8px;align-items:center;flex-wrap:wrap;user-select:none}
+.fold>summary::-webkit-details-marker{display:none}
+.fold .ar{color:#8a8a8a;display:inline-block;transition:transform .15s}
+.fold[open] .ar{transform:rotate(90deg)}
+.fold .fh{margin:8px 0 4px}
 </style></head><body>
 <h1>TOGA Module</h1>
 <div id="warn"></div><div class="bar" id="bar">…</div>
@@ -432,6 +597,26 @@ button:hover{background:#3a3a3a}
   <label>Sweep <input type="number" id="sweepInt" min="5" max="600"> s</label>
   <span class="hint">Modus-Wechsel im Auto-Modus &middot; Speed-Sweep min&rarr;max&rarr;min</span>
 </div>
+<div class="kz">
+  <div class="row"><span class="tl">Profil</span>
+    <button class="pb" id="pt" onclick="setProfile(0)">Togalicht</button>
+    <button class="pb dh" id="pd" onclick="setProfile(1)">Drahthaus</button>
+    <span class="hint">am Pad: Mod+ &middot; Mod&minus; &middot; Beat 5&nbsp;s halten</span></div>
+  <div class="row" style="margin-top:10px"><span class="tl">Setlist</span><span class="hint" id="slh"></span></div>
+  <div id="sl"></div>
+  <div class="kzadd"><select id="sladd"></select><button onclick="slAdd()">+ Hinzuf&uuml;gen</button>
+    <span class="hint">&#9654; springt hin &middot; Reihenfolge mit &#9650;&#9660; &middot; Mod+/&minus; am Pad steppen hier durch (Drahthaus)</span></div>
+</div>
+<details class="kz fold" id="fmh">
+  <summary><span class="ar">&#9656;</span><span class="tl">Farben der Konzertmodi</span><span class="hint" id="mhn"></span></summary>
+  <div class="hint fh">Farbe w&auml;hlen (Picker oder Hex) &middot; &bdquo;Nativ&ldquo; = Originalfarben &middot; gilt pro Modus, wie Taste 8</div>
+  <div id="mh"></div>
+</details>
+<details class="kz fold" id="ftc">
+  <summary><span class="ar">&#9656;</span><span class="tl">Farben der Text-Strobes</span><span class="hint" id="tcn"></span></summary>
+  <div class="hint fh">pro Text eine eigene Farbe &middot; &bdquo;Strobe&ldquo; = wie die Strobe-Farbe (Taste 15) &middot; Module blitzen in derselben Farbe</div>
+  <div id="tc"></div>
+</details>
 <div id="list"></div>
 <script>
 let EFF=[],LOCALS=[],AUTOS=[],LBASE=100,ABASE=120,OPTS='',FOLLOW=255;
@@ -476,6 +661,86 @@ function put(el,rep){ rep=''+rep;
   if(el._p!=null){ if(el._p===rep){el._p=null} else if(Date.now()-el._t>4000){el._p=null} else return; }
   if(el.type==='checkbox')el.checked=(rep==='1');else el.value=rep;
 }
+// ── Drahthaus setlist / profile ──
+let SL=[],SLKEY='';
+function setProfile(p){fetch('/api/profile?p='+p);SLKEY=''}
+function slSend(){fetch('/api/setlist?list='+SL.join(','));SLKEY=''}
+function slMove(i,d){const j=i+d;if(j<0||j>=SL.length)return;const t=SL[i];SL[i]=SL[j];SL[j]=t;slSend()}
+function slDel(i){if(SL.length<=1)return;SL.splice(i,1);slSend()}
+function slAdd(){if(SL.length>=32)return;SL.push(+document.getElementById('sladd').value);slSend()}
+function slJump(i){fetch('/api/jump?pos='+i);SLKEY=''}
+function slRender(d){
+  const key=JSON.stringify([d.profile,d.setPos,d.setlist,d.gridIdx]); if(key===SLKEY)return; SLKEY=key;
+  document.getElementById('pt').className='pb'+(d.profile?'':' sel');
+  document.getElementById('pd').className='pb dh'+(d.profile?' sel':'');
+  document.getElementById('slh').textContent=d.profile?('Position '+d.setPos+' von '+d.setlist.length):'(nur im Profil Drahthaus aktiv)';
+  SL=d.setlist.slice(); let h='';
+  SL.forEach((m,i)=>{ const cur=(d.profile&&i==d.setPos), live=(m===d.gridIdx);
+    h+='<div class="sr'+(cur?' cur':'')+(live?' live':'')+'"><span class="sn">'+i+'</span><span class="sm">'+(EFF[m]||m)+'</span>'+
+       '<button onclick="slJump('+i+')" title="springen">&#9654;</button><button onclick="slMove('+i+',-1)">&#9650;</button>'+
+       '<button onclick="slMove('+i+',1)">&#9660;</button><button onclick="slDel('+i+')" title="entfernen">&#10005;</button></div>'; });
+  document.getElementById('sl').innerHTML=h;
+}
+// ── Per-mode colour pickers ──
+// The grid stores a HUE OFFSET per mode (added to the mode's native colours). A
+// picked colour is turned into a FastLED hue and the offset = picked − native.
+// FastLED's rainbow hue is not CSS hue: map through its anchor points.
+const FLH=[0,32,64,96,128,160,192,224,256], CSSH=[0,30,60,120,180,240,270,330,360];
+function cssToFl(d){ d=((d%360)+360)%360; for(let i=0;i<8;i++) if(d<=CSSH[i+1]) return Math.round(FLH[i]+(d-CSSH[i])/(CSSH[i+1]-CSSH[i])*(FLH[i+1]-FLH[i]))&255; return 0; }
+function flToCss(h){ h&=255; for(let i=0;i<8;i++) if(h<=FLH[i+1]) return CSSH[i]+(h-FLH[i])/(FLH[i+1]-FLH[i])*(CSSH[i+1]-CSSH[i]); return 0; }
+function hslHex(hd){ const f=n=>{const k=(n+hd/30)%12, a=0.5; const v=0.5-a*Math.max(-1,Math.min(k-3,9-k,1)); return Math.round(v*255).toString(16).padStart(2,'0');}; return '#'+f(0)+f(8)+f(4); }
+function hexHue(hx){ const m=/^#?([0-9a-f]{6})$/i.exec(hx.trim()); if(!m) return null; const n=parseInt(m[1],16), r=(n>>16&255)/255,g=(n>>8&255)/255,b=(n&255)/255;
+  const mx=Math.max(r,g,b), mn=Math.min(r,g,b), d=mx-mn; if(d===0) return 0; let h;
+  if(mx===r) h=((g-b)/d)%6; else if(mx===g) h=(b-r)/d+2; else h=(r-g)/d+4; return (h*60+360)%360; }
+let MH={}, NH=[], MHKEY='';
+function mhSet(m,off){ fetch('/api/modehue?m='+m+'&h='+(off&255)); MH[m]={off:off&255,t:Date.now()}; }
+function mhNative(m){ mhSet(m,0); MHKEY=''; }
+function mhPick(m,hx){ const d=hexHue(hx); if(d===null) return; mhSet(m,(cssToFl(d)-(NH[m]||0)+512)&255); MHKEY=''; }
+function mhRender(d){
+  if(!d.mhue||!d.mhue.length) { document.getElementById('mh').innerHTML='<span class="hint">warte auf das Grid &hellip;</span>'; return; }
+  NH=d.nhue||[];
+  const list=[]; d.setlist.forEach(m=>{ if(list.indexOf(m)<0) list.push(m); });
+  const now=Date.now(); const val=m=>{ const p=MH[m]; if(p && now-p.t<4000 && p.off!==d.mhue[m]) return p.off; return d.mhue[m]; };
+  const key=JSON.stringify([list,list.map(val)]); if(key===MHKEY) return;
+  const own=list.filter(m=>val(m)).length;   // closed-fold summary: how many modes carry their own colour
+  document.getElementById('mhn').textContent=list.length+' Modi'+(own?(' · '+own+' angepasst'):'');
+  if(document.activeElement && document.activeElement.closest && document.activeElement.closest('#mh')) return;   // don't yank a field mid-edit
+  MHKEY=key; let h='';
+  list.forEach(m=>{ const off=val(m)||0, hx=hslHex(flToCss((NH[m]||0)+off));
+    h+='<div class="mh"><span class="sm">'+(EFF[m]||m)+'</span>'+
+       '<input type="color" value="'+hx+'" onchange="mhPick('+m+',this.value)">'+
+       '<input class="hx" type="text" value="'+hx+'" maxlength="7" onchange="mhPick('+m+',this.value)">'+
+       '<button onclick="mhNative('+m+')">Nativ</button>'+
+       '<span class="hint">'+(off?('+'+off):'nativ')+'</span></div>'; });
+  document.getElementById('mh').innerHTML=h;
+}
+// ── Text-strobe colours: here the picked colour IS the colour (hue + saturation) ──
+let TCKEY='', TCP={};
+function hexHS(hx){ const m=/^#?([0-9a-f]{6})$/i.exec(hx.trim()); if(!m) return null; const n=parseInt(m[1],16), r=(n>>16&255)/255,g=(n>>8&255)/255,b=(n&255)/255;
+  const mx=Math.max(r,g,b), mn=Math.min(r,g,b); const s=mx?Math.round((mx-mn)/mx*255):0; return {h:cssToFl(hexHue(hx)), s:s}; }
+function hsHex(h,s){ const d=flToCss(h), sv=s/255; const f=n=>{ const k=(n+d/60)%6; const v=1-sv*Math.max(0,Math.min(k,4-k,1)); return Math.round(v*255).toString(16).padStart(2,'0'); }; return '#'+f(5)+f(3)+f(1); }
+function tcPick(id,hx){ const v=hexHS(hx); if(!v) return; fetch('/api/textcol?id='+id+'&h='+v.h+'&s='+v.s); TCP[id]={t:Date.now(),on:1,h:v.h,s:v.s}; TCKEY=''; }
+function tcReset(id){ fetch('/api/textcol?id='+id+'&reset=1'); TCP[id]={t:Date.now(),on:0}; TCKEY=''; }
+function tcRender(d){
+  if(!d.tcol) return;
+  const now=Date.now(); const rowsT=d.tcol.map((r,i)=>{ const id=i+1, p=TCP[id]; if(p && now-p.t<4000) return [r[0],p.on,p.on?p.h:r[2],p.on?p.s:r[3]]; return r; });
+  const key=JSON.stringify(rowsT); if(key===TCKEY) return;
+  const own=rowsT.filter(r=>r[1]).length;     // closed-fold summary
+  document.getElementById('tcn').textContent=rowsT.length+' Texte'+(own?(' · '+own+' eigene Farbe'):' · alle wie Strobe-Farbe');
+  if(document.activeElement && document.activeElement.closest && document.activeElement.closest('#tc')) return;
+  TCKEY=key; let h='';
+  rowsT.forEach((r,i)=>{ const id=i+1, hx=r[1]?hsHex(r[2],r[3]):'#ffffff';
+    h+='<div class="mh"><span class="sm">'+r[0]+'</span>'+
+       '<input type="color" value="'+hx+'" onchange="tcPick('+id+',this.value)">'+
+       '<input class="hx" type="text" value="'+(r[1]?hx:'')+'" placeholder="Strobe" maxlength="7" onchange="tcPick('+id+',this.value)">'+
+       '<button onclick="tcReset('+id+')">Strobe</button>'+
+       '<span class="hint">'+(r[1]?'eigene Farbe':'wie Strobe-Farbe')+'</span></div>'; });
+  document.getElementById('tc').innerHTML=h;
+}
+// Colour folds start closed; each phone remembers which ones it had open.
+['fmh','ftc'].forEach(id=>{ const f=document.getElementById(id);
+  try{ f.open=localStorage.getItem('fold.'+id)==='1'; }catch(e){}
+  f.addEventListener('toggle',()=>{ try{ localStorage.setItem('fold.'+id,f.open?'1':'0'); }catch(e){} }); });
 const rows={};
 function makeCard(mac){
   const c=document.createElement('div'); c.className='m';
@@ -532,7 +797,9 @@ function makeCard(mac){
 }
 async function tick(){
   let d; try{d=await(await fetch('/api/modules')).json()}catch(e){return}
-  if(!OPTS){ EFF=d.effects;LOCALS=d.locals;AUTOS=d.autos;LBASE=d.localBase;ABASE=d.autoBase;FOLLOW=d.follow;OPTS=optsHTML(); }
+  if(!OPTS){ EFF=d.effects;LOCALS=d.locals;AUTOS=d.autos;LBASE=d.localBase;ABASE=d.autoBase;FOLLOW=d.follow;OPTS=optsHTML();
+    document.getElementById('sladd').innerHTML=EFF.map((n,i)=>'<option value="'+i+'"'+(i==108?' selected':'')+'>'+i+' '+n+'</option>').join(''); }
+  slRender(d); mhRender(d); tcRender(d);
   document.getElementById('warn').innerHTML = d.chOk?'':
     '<div class="warn"><b>Kanal '+d.ch+' statt '+d.chWant+'.</b> Dieser Knoten h&auml;ngt am Router und'+
     ' funkt deshalb auf dessen Kanal &mdash; die Module senden auf '+d.chWant+' und sind hier'+
@@ -545,7 +812,7 @@ async function tick(){
   for(const b in cnt) if(cnt[b]>best){best=cnt[b];common=b}
   const mixed=builds.length>1;
   document.getElementById('bar').textContent =
-    'Kanal '+d.ch+' · Grid '+(d.gridSeen?('sichtbar, Modus '+d.gridMode):'nicht gesehen')+' · '+d.mods.length+' Module'+
+    (d.profile?'Drahthaus':'Togalicht')+' · Kanal '+d.ch+' · Grid '+(d.gridSeen?('sichtbar, Modus '+d.gridIdx+' '+(EFF[d.gridIdx]||'')):'nicht gesehen')+' · '+d.mods.length+' Module'+
     (mixed?' · ⚠ '+builds.length+' verschiedene Versionen!':(builds.length==1?' · alle Version '+fwtag(builds[0]):''));
   put(autoIntEl,d.autoInt); put(sweepIntEl,d.sweepInt);   // grid's echoed interval values (put() protects an in-flight edit)
   const L=document.getElementById('list'); const seen={};
@@ -603,6 +870,94 @@ void briAdjust(int dir){
 }
 void saveCtrlBri(){ ctrlPrefs.begin("ctrl",false); ctrlPrefs.putUChar("cbri",ctrlBri); ctrlPrefs.end(); }
 
+// ── Profile + setlist persistence (v11) ──
+void saveProfile(){ ctrlPrefs.begin("ctrl",false); ctrlPrefs.putUChar("prof",gProfile); ctrlPrefs.end(); }
+void saveSetlist(){ ctrlPrefs.begin("ctrl",false); ctrlPrefs.putBytes("setl",setlist,setN); ctrlPrefs.putUChar("setn",setN); ctrlPrefs.putUChar("spos",setPos); ctrlPrefs.end(); }
+void loadProfileSetlist(){
+  ctrlPrefs.begin("ctrl",true);
+  gProfile=ctrlPrefs.getUChar("prof",TOGA_PROFILE_TOGA);
+  setN=ctrlPrefs.getUChar("setn",0);
+  if(setN>SETLIST_MAX) setN=0;
+  if(setN && ctrlPrefs.getBytes("setl",setlist,setN)!=setN) setN=0;
+  setPos=ctrlPrefs.getUChar("spos",0);
+  ctrlPrefs.end();
+  if(gProfile!=TOGA_PROFILE_DRAHTHAUS) gProfile=TOGA_PROFILE_TOGA;
+  bool ok=setN>0; for(uint8_t i=0;i<setN;i++) if(setlist[i]>=TOGA_EFFECT_COUNT) ok=false;
+  if(!ok){ setN=sizeof(SETLIST_DEFAULT); memcpy(setlist,SETLIST_DEFAULT,setN); setPos=0; }
+  if(setPos>=setN) setPos=0;
+  // One-time migration (2026-10): a setlist saved before mode 127 existed gets
+  // "Schwarz" put in front of the submarine (107), or after the calibration view.
+  // Flagged in NVS, so deleting it on the phone page later sticks.
+  ctrlPrefs.begin("ctrl",false);
+  if(!ctrlPrefs.getUChar("s127",0)){
+    bool has=false; for(uint8_t i=0;i<setN;i++) if(setlist[i]==TOGA_MODE_SCHWARZ) has=true;
+    if(!has && setN<SETLIST_MAX){
+      uint8_t at=(setN>1)?1:setN; for(uint8_t i=0;i<setN;i++) if(setlist[i]==107){ at=i; break; }
+      memmove(setlist+at+1,setlist+at,setN-at); setlist[at]=TOGA_MODE_SCHWARZ; setN++;
+      if(setPos>=at && setPos+1<setN) setPos++;               // keep standing on the same song
+      ctrlPrefs.putBytes("setl",setlist,setN); ctrlPrefs.putUChar("setn",setN); ctrlPrefs.putUChar("spos",setPos);
+    }
+    ctrlPrefs.putUChar("s127",1);
+  }
+  ctrlPrefs.end();
+}
+// Jump the wall to setlist position `pos` (absolute mode), in either profile.
+// ── Mode change, closed loop ──
+// A mode change is sent as an ABSOLUTE target (TOGA_CMD_MODESET) and then
+// confirmed against the grid's own sync (200 ms). If the grid does not report
+// the target within MODE_RETRY_MS of a send, it is sent again (new seq), up to
+// MODE_TRIES times. Before this, a lost packet looked like "the press was
+// ignored", and because the controller had already counted it, the NEXT press
+// jumped two modes. Resending is harmless: the grid ignores a MODESET to the
+// mode it already shows. Further presses before the confirm step from the
+// pending target, not from the lagging sync, so fast stepping never loses one.
+#define MODE_RETRY_MS 350
+#define MODE_TRIES    6
+int16_t  modeTarget=-1; uint32_t modeSentAt=0; uint8_t modeTries=0;
+void sendModeTarget(int16_t idx){
+  if(idx<0||idx>=TOGA_EFFECT_COUNT) return;
+  modeTarget=idx; modeTries=0; modeSentAt=millis();
+  sendCmd(TOGA_CMD_MODESET,0,idx);
+  Serial.printf("mode -> %d\n", idx);
+}
+void serviceModeTarget(uint32_t t){
+  if(modeTarget<0) return;
+  if(autoMode!=TOGA_AUTO_OFF){ modeTarget=-1; return; }               // the automatic owns the mode now
+  if(gsSyncSeen && (int32_t)(gsSyncAt-modeSentAt)>0 && gs.animIndex==modeTarget){ modeTarget=-1; return; }   // confirmed
+  if((int32_t)(t-modeSentAt)<MODE_RETRY_MS) return;
+  if(modeTries>=MODE_TRIES){ Serial.printf("mode %d: no confirm, giving up\n", modeTarget); modeTarget=-1; return; }
+  modeTries++; modeSentAt=t;
+  sendCmd(TOGA_CMD_MODESET,0,modeTarget);
+  Serial.printf("mode -> %d (retry %u)\n", modeTarget, modeTries);
+}
+void setlistGoto(uint8_t pos){
+  if(setN==0) return;
+  setPos=pos%setN; setDirty=true; setDirtyAt=millis();
+  autoMode=TOGA_AUTO_OFF;                                     // a chosen song ends the automatic, like a manual step
+  sendModeTarget(setlist[setPos]);
+}
+// Mode +/- : Drahthaus walks the setlist, Togalicht steps the full list as before.
+void stepMode(int dir){
+  if(gProfile==TOGA_PROFILE_DRAHTHAUS && setN>0) setlistGoto((uint8_t)((setPos+dir+setN)%setN));
+  else {
+    // Togalicht: step from the pending target if one is in flight, else from what
+    // the grid last reported. Without a sync yet, fall back to the relative step.
+    int base = modeTarget>=0 ? modeTarget : (gsSyncSeen ? gs.animIndex : -1);
+    if(base<0) sendCmd(TOGA_CMD_MODE,0,dir);
+    else sendModeTarget((int16_t)((base+dir+TOGA_EFFECT_COUNT)%TOGA_EFFECT_COUNT));
+  }
+}
+void setProfile(uint8_t p){
+  profSel=false; textLayer=false; textHeld=TOGA_TEXT_NONE;
+  if(p!=gProfile){
+    if(p==TOGA_PROFILE_DRAHTHAUS && gsSyncSeen) togaModeBefore=gs.animIndex;   // remember where Togalicht was
+    gProfile=p; saveProfile();
+    autoMode=TOGA_AUTO_OFF;
+    if(gProfile==TOGA_PROFILE_DRAHTHAUS){ if(setN) setlistGoto(setPos); else sendCmd(0,0,0); }
+    else { if(togaModeBefore>=0 && togaModeBefore<TOGA_EFFECT_COUNT) sendModeTarget(togaModeBefore); else sendCmd(0,0,0); }
+  } else sendCmd(0,0,0);
+}
+
 // ── Beat match (button 11) ──
 // Tap it in time with the music; roughly 4 taps lock the tempo. There is no
 // arming step and no timeout: the pulse then runs forever on that tempo until
@@ -621,6 +976,28 @@ void saveCtrlBri(){ ctrlPrefs.begin("ctrl",false); ctrlPrefs.putUChar("cbri",ctr
 TrellisCallback handleKey(keyEvent evt){
   uint8_t b=PHYS2LOG[evt.bit.NUM]; bool pressed=(evt.bit.EDGE==SEESAW_KEYPAD_EDGE_RISING); // pad 90° CCW: physical→logical
   btnDown[b]=pressed; if(pressed) btnDownT[b]=millis();
+  // +/- taps are LATCHED: a quick tap can press AND release inside one 20 ms poll,
+  // and the level-edge test in loop() would then never see it.
+  if(pressed && b==3) plusHit=true;
+  if(pressed && b==7) minusHit=true;
+  // ── Profile selection (pad blinking red): only the two choice keys do anything ──
+  if(profSel){
+    if(pressed){ if(b==0) setProfile(TOGA_PROFILE_TOGA); else if(b==4) setProfile(TOGA_PROFILE_DRAHTHAUS); }
+    return 0;
+  }
+  // ── Drahthaus: key 13 toggles the text-strobe layer; inside it only text keys count ──
+  if(gProfile==TOGA_PROFILE_DRAHTHAUS && b==13){
+    if(pressed){ textLayer=!textLayer; textHeld=TOGA_TEXT_NONE; if(state==ST_ADJUST && isTextKey(activeBtn)) enterDefault(); sendCmd(0,0,0); }
+    return 0;
+  }
+  if(isTextKey(b)){                                    // a text key in the open layer
+    for(uint8_t i=0;i<TOGA_TEXT_COUNT;i++) if(TEXT_KEYS[i]==b){
+      if(pressed) textHeld=(uint8_t)(i+1); else if(textHeld==i+1) textHeld=TOGA_TEXT_NONE;
+      break;
+    }
+    sendCmd(0,0,0);                                    // edge → notify now, don't wait for the heartbeat
+    return 0;
+  }                                                    // every other key works as usual, layer or not
   if(pressed){
     if(isParamBtn(b) && state==ST_ADJUST && activeBtn==b){ enterDefault(); suppressBtn=b; } // tap active param → off
     // Strobe-speed key (phys 10): a plain TAP toggles its adjust mode (no 2s hold),
@@ -650,7 +1027,7 @@ bool atLimit(int dir){
 // plain mode-switching and the colour params wrap, so they never report a limit.
 // Used only to blink the +/- key when a held press no longer changes anything.
 bool adjustAtLimit(int dir){
-  if(btnDown[15]||btnDown[14]||btnDown[13])                                      // strobe held → tuning global strobe speed
+  if(btnDown[15]||btnDown[14]||(btnDown[13]&&gProfile==TOGA_PROFILE_TOGA)||textHeld!=TOGA_TEXT_NONE)   // strobe/text held → tuning global strobe speed
     return dir>0? gs.strobeSpeed>=STROBE_SPEED_MAX : gs.strobeSpeed<=STROBE_SPEED_MIN;
   switch(briMode){
     case BRI_GLOBAL: return dir>0? gs.globalBrightness>=MAX_BRIGHTNESS : gs.globalBrightness<=BRI_STEP;  // floor = one step above off
@@ -735,6 +1112,20 @@ uint32_t scaleCol(uint32_t c,uint8_t s){
 void renderLEDs(uint32_t t){
   bool blink=((t/125)%2)==0;                      // ~4 Hz
   bool slowBlink=((t/250)%2)==0;                  // ~2 Hz — auto mood
+  trellis.pixels.setBrightness(255);
+  // ── Profile selection: the whole pad blinks red, the bottom row offers the two
+  //    profiles (phys 12 = Togalicht in teal, phys 13 = Drahthaus in orange); the
+  //    active one is bright, the other dim. Not dimmed by the pad brightness. ──
+  if(profSel){
+    for(int i=0;i<16;i++){
+      uint32_t col = slowBlink ? C(90,0,0) : C(0,0,0);
+      if(i==0) col = (gProfile==TOGA_PROFILE_TOGA)      ? C(0,170,210) : C(0,40,50);
+      if(i==4) col = (gProfile==TOGA_PROFILE_DRAHTHAUS) ? C(230,70,0)  : C(55,16,0);
+      trellis.pixels.setPixelColor(LOG2PHYS[i],col);
+    }
+    trellis.pixels.show(); return;
+  }
+  static const uint32_t TC[TOGA_TEXT_COUNT]={ C(230,20,120), C(230,60,0), C(120,120,120), C(0,150,200), C(0,170,90) };
   // Dim the pad by the grid's global brightness AND this pad's own factor — but do
   // the scaling PER PIXEL (scaleCol) instead of the hardware setBrightness, so the
   // Helligkeit key (button 4) can be exempted below and stay clearly visible while
@@ -758,7 +1149,7 @@ void renderLEDs(uint32_t t){
       if(i==3||i==7)        col=C(0,60,80);        // +/-
       else if(isParamBtn(i)) col=paramCol(i,80);   // each param in its own colour (bright enough to stay visible when the pad is dimmed)
       else if(i==11)        col=beatCol(t);        // Beat tap — pulses on the locked tempo
-      else if(i==13)        col=C(0,45,55);        // Castle-strobe (2nd strobe)
+      else if(i==13)        col=(gProfile==TOGA_PROFILE_DRAHTHAUS)?C(90,50,0):C(0,45,55);   // Drahthaus: text layer (amber) · Toga: castle-strobe
       else if(i==14)        col=C(45,20,45);       // Mode-strobe
       else if(i==15)        col=strobeCol(70);     // Strobe shows its set colour
     }
@@ -770,7 +1161,7 @@ void renderLEDs(uint32_t t){
     if(btnDown[i]){
       if(i==15)                     col=strobeCol(255);
       else if(i==14)                col=rgbScale(gs.tintR,gs.tintG,gs.tintB,255);  // mode-strobe flash colour
-      else if(i==13)                col=C(0,140,160);   // castle-strobe held
+      else if(i==13)                col=(gProfile==TOGA_PROFILE_DRAHTHAUS)?C(200,110,0):C(0,140,160);   // castle-strobe held / text layer opening
       else if(i!=4 && !(state==ST_ADJUST && i==activeBtn)) col=C(70,20,0);
     }
     // +/- at the end of the setting being adjusted: while the key is held and the
@@ -797,6 +1188,12 @@ void renderLEDs(uint32_t t){
     // While blacked out, kill every pad LED except the ones the operator still uses:
     // blackout(10), strobe(15), mode-strobe(14), castle-strobe(13) and auto(0).
     if(gBlackout && i!=0 && i!=10 && i!=13 && i!=14 && i!=15) col=C(0,0,0);
+    // Text layer: the six text keys wear their own colours (held = white), the
+    // layer key blinks amber; every other key keeps its normal light and function.
+    if(textLayer){
+      for(uint8_t k=0;k<TOGA_TEXT_COUNT;k++) if(TEXT_KEYS[k]==i) col=(textHeld==k+1)?C(255,255,255):scaleCol(TC[k],visScale);
+      if(i==13) col = blink ? C(90,50,0) : C(40,22,0);
+    }
     trellis.pixels.setPixelColor(LOG2PHYS[i],col);   // pad 90° CW: logical→physical
   }
   trellis.pixels.show();
@@ -815,6 +1212,8 @@ void setup(){
   ctrlBri=ctrlPrefs.getUChar("cbri",CTRL_BRI_DEFAULT);
   ctrlPrefs.end();
   ctrlBri=constrain(ctrlBri,CTRL_BRI_MIN,CTRL_BRI_MAX);
+  loadProfileSetlist();                            // profile + Drahthaus setlist (v11)
+  Serial.printf("profile  %s, setlist %u entries, pos %u\n", gProfile?"Drahthaus":"Togalicht", setN, setPos);
 
   Wire.begin();
   if(!trellis.begin()){ Serial.println(F("NeoTrellis not found — check I2C")); while(1) delay(1000); }
@@ -863,6 +1262,11 @@ void setup(){
   server.on("/api/modules", handleModules);
   server.on("/api/set", handleSet);
   server.on("/api/timing", handleTiming);
+  server.on("/api/setlist", handleSetlist);         // Drahthaus setlist: read / replace (v11)
+  server.on("/api/jump", handleJump);               // jump to a setlist position
+  server.on("/api/profile", handleProfile);         // Togalicht / Drahthaus
+  server.on("/api/modehue", handleModeHue);
+  server.on("/api/textcol", handleTextCol);         // per-text strobe colour         // per-mode colour from the colour pickers
   server.onNotFound([](){ server.send(404,"text/plain","404"); });
   server.begin();
   Serial.println(F("http ready on :80  (http://192.168.4.1/)"));
@@ -892,6 +1296,7 @@ void loop(){
   server.handleClient();                            // the module-manager page
   drainHellos(t);                                   // merge parked hellos into the table
 
+  serviceRepeats(t);                                // spread repeats of one-shot commands (above the poll gate: ms-accurate)
   if(t-lastHB>=100){ lastHB=t; sendCmd(0,0,0); }   // heartbeat (carries strobe state)
 
   reportApClients(t);
@@ -899,11 +1304,36 @@ void loop(){
   if(t-lastPoll<20) return;
   lastPoll=t;
   trellis.read();                                  // fires handleKey
+  // handleKey stamps btnDownT with millis() DURING the I2C read (1-2ms), i.e.
+  // possibly later than `t`. With the old `t`, t-btnDownT wrapped to ~4e9 and a
+  // short TAP on a param key jumped straight into ADJUST — from then on +/-
+  // changed that param instead of the mode. Re-read the clock after the read.
+  t=millis();
+
+  // ── Profile gesture: Mode+ / Mode- / Beat (phys 0/1/2) held together 5s → select ──
+  static uint32_t triDownAt=0; static bool triPrev=false, triFired=false;
+  bool tri=btnDown[3]&&btnDown[7]&&btnDown[11];
+  if(tri && !triPrev){ triDownAt=t; triFired=false; }
+  triPrev=tri;
+  if(tri && !triFired && !profSel && (t-triDownAt)>=PROFILE_HOLD_MS){   // fires once per hold: release to re-arm
+    triFired=true;
+    profSel=true; profSelT=t; textLayer=false; textHeld=TOGA_TEXT_NONE; enterDefault(); briMode=BRI_NONE; sendCmd(0,0,0);
+  }
+  if(profSel && (t-profSelT)>=PROFILE_SEL_TIMEOUT) profSel=false;   // nobody chose → back, unchanged
+  // In the Drahthaus profile the wall must be on the setlist entry we think it is:
+  // after boot (or a grid reboot) re-send the position once the grid is heard.
+  static bool resynced=false;
+  if(gProfile==TOGA_PROFILE_DRAHTHAUS && gsSyncSeen && !resynced && setN){
+    resynced=true; if(gs.animIndex!=setlist[setPos]) sendModeTarget(setlist[setPos]);
+  }
+  bool layered=profSel;                            // the profile picker owns the keys; the text layer does NOT
 
   // ── Hold a param button 2s → activate ADJUST (it starts blinking) ──
   const int pbs[4]={8,12,1,5};                   // button 4 has its own machine below
   for(int k=0;k<4;k++){ int b=pbs[k];
+    if(layered) break;                           // keys belong to the layer
     if(b==suppressBtn) continue;                 // don't re-arm the button we just tapped off
+    if(isTextKey(b)) continue;                   // Speed / Strobe-colour are text keys while the layer is open
     if(btnDown[b] && (t-btnDownT[b])>=HOLD_TO_SELECT && !(state==ST_ADJUST && activeBtn==b)) enterAdjust(b);
   }
 
@@ -926,7 +1356,8 @@ void loop(){
   static uint32_t b4DownAt=0;                     // OUR own press timestamp — immune to handleKey re-stamping btnDownT
   static uint32_t briChangeT=0;                   // last time briMode changed here (cooldown anchor)
   if(b4 && !prevB4){ b4Escalated=false; b4DownAt=t; }   // fresh press: reset escalation + start our hold timer
-  if(b4){
+  if(layered) b4Escalated=true;                   // key 4 picks a profile / is inert in a layer: never a brightness tap
+  if(b4 && !layered){
     uint32_t held=t-b4DownAt;
     if(held>=HOLD_TO_CTRL){ if(briMode!=BRI_CTRL){ briMode=BRI_CTRL; b4Escalated=true; briChangeT=t; enterDefault(); } }
     else if(held>=HOLD_TO_SELECT){ if(briMode!=BRI_MODE && briMode!=BRI_CTRL){ briMode=BRI_MODE; b4Escalated=true; briChangeT=t; enterDefault(); } }
@@ -945,40 +1376,46 @@ void loop(){
 
   // ── +/- ──
   bool plus=btnDown[3], minus=btnDown[7];
-  if(btnDown[15]||btnDown[14]||btnDown[13]){        // any strobe held → +/- tune the ONE global strobe speed (+ = faster)
-    if(plus && !prevPlus){ plusPressT=t; plusRepT=t; sendCmd(2,TOGA_P_STROBESPEED,+1); }
+  bool plusEdge =(plus && !prevPlus)  || plusHit;  plusHit=false;
+  bool minusEdge=(minus && !prevMinus)|| minusHit; minusHit=false;
+  if(layered){ /* +/- are layer keys (or inert) — nothing to step */ }
+  else if(btnDown[15]||btnDown[14]||(btnDown[13]&&gProfile==TOGA_PROFILE_TOGA)||textHeld!=TOGA_TEXT_NONE){   // + a held TEXT key   // any strobe held → +/- tune the ONE global strobe speed (+ = faster)
+    if(plusEdge){ plusPressT=t; plusRepT=t; sendCmd(2,TOGA_P_STROBESPEED,+1); }
     else if(plus){ if(t-plusPressT>=400 && t-plusRepT>=60){ plusRepT=t; sendCmd(2,TOGA_P_STROBESPEED,+1); } }
-    if(minus && !prevMinus){ minusPressT=t; minusRepT=t; sendCmd(2,TOGA_P_STROBESPEED,-1); }
+    if(minusEdge){ minusPressT=t; minusRepT=t; sendCmd(2,TOGA_P_STROBESPEED,-1); }
     else if(minus){ if(t-minusPressT>=400 && t-minusRepT>=60){ minusRepT=t; sendCmd(2,TOGA_P_STROBESPEED,-1); } }
   } else if(briMode!=BRI_NONE){                     // brightness edit-mode → +/- adjust the selected brightness
-    if(plus && !prevPlus){ plusPressT=t; plusRepT=t; briAdjust(+1); }
+    if(plusEdge){ plusPressT=t; plusRepT=t; briAdjust(+1); }
     else if(plus){ uint32_t h=t-plusPressT; if(h>=500){ uint32_t rate=h<2000?80:(h<4000?40:16); if(t-plusRepT>=rate){ plusRepT=t; briAdjust(+1); } } }
-    if(minus && !prevMinus){ minusPressT=t; minusRepT=t; briAdjust(-1); }
+    if(minusEdge){ minusPressT=t; minusRepT=t; briAdjust(-1); }
     else if(minus){ uint32_t h=t-minusPressT; if(h>=500){ uint32_t rate=h<2000?80:(h<4000?40:16); if(t-minusRepT>=rate){ minusRepT=t; briAdjust(-1); } } }
   } else if(state==ST_DEFAULT){
     // In auto-mode the FIRST +/- press ONLY ends the automatic and keeps the mode
     // that is showing — it does NOT step. autoMode rides every packet, so notifying
     // once (sendCmd) propagates the off; the grid then persists the current mode.
     // Once auto is off, +/- steps the mode as before.
-    bool edge = (plus && !prevPlus)||(minus && !prevMinus);
+    bool edge = (plusEdge)||(minusEdge);
     if(edge && autoMode!=TOGA_AUTO_OFF){
       autoMode=TOGA_AUTO_OFF; sendCmd(0,0,0);        // end auto, hold current mode (no step)
     } else {
-      if(plus  && !prevPlus)  sendCmd(1,0,+1);        // next mode
-      if(minus && !prevMinus) sendCmd(1,0,-1);        // prev mode
+      if(plusEdge)  stepMode(+1);           // next mode (Drahthaus: next setlist entry)
+      if(minusEdge) stepMode(-1);           // prev mode
     }
   } else if(state==ST_ADJUST){
-    if(plus && !prevPlus){ plusPressT=t; plusRepT=t; sendCmd(2,activeTarget,+1); }
+    if(plusEdge){ plusPressT=t; plusRepT=t; sendCmd(2,activeTarget,+1); }
     else if(plus){ uint32_t h=t-plusPressT; if(h>=500){ uint32_t rate=h<2000?80:(h<4000?40:16); if(t-plusRepT>=rate){ plusRepT=t; sendCmd(2,activeTarget,+1); } } }
-    if(minus && !prevMinus){ minusPressT=t; minusRepT=t; sendCmd(2,activeTarget,-1); }
+    if(minusEdge){ minusPressT=t; minusRepT=t; sendCmd(2,activeTarget,-1); }
     else if(minus){ uint32_t h=t-minusPressT; if(h>=500){ uint32_t rate=h<2000?80:(h<4000?40:16); if(t-minusRepT>=rate){ minusRepT=t; sendCmd(2,activeTarget,-1); } } }
   }
   prevPlus=plus; prevMinus=minus;
+  serviceModeTarget(t);                             // resend an unconfirmed mode change
 
   // ADJUST stays until the active param button is tapped again (no timeout).
 
   // Persist the controller pad factor lazily (flash wear): 1.5s after the last edit.
-  if(ctrlBriDirty && (t-ctrlBriDirtyAt)>=1500){ ctrlBriDirty=false; saveCtrlBri(); }
+  // Signed: both stamps are taken with millis() later in this same pass than `t`.
+  if(ctrlBriDirty && (int32_t)(t-ctrlBriDirtyAt)>=1500){ ctrlBriDirty=false; saveCtrlBri(); }
+  if(setDirty && (int32_t)(t-setDirtyAt)>=1500){ setDirty=false; saveSetlist(); }   // setlist / position, debounced (flash wear)
 
   renderLEDs(t);
 }
